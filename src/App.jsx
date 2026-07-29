@@ -179,6 +179,20 @@ const eur = (v) =>
   }).format(v || 0);
 const eurFull = (v) =>
   new Intl.NumberFormat(CUR === "CHF" ? "de-CH" : "de-DE", { style: "currency", currency: CUR }).format(v || 0);
+/* Betrag in einer beliebigen Währung (für Cash-Konten in Fremdwährung) */
+const money = (v, ccy) =>
+  new Intl.NumberFormat(ccy === "CHF" ? "de-CH" : "de-DE", { style: "currency", currency: ccy || CUR }).format(v || 0);
+/* Stückzahlen kompakt: bis 8 Dezimalstellen, ohne unnötige Nullen */
+const fmtQty = (v) => {
+  const n = Number(v) || 0;
+  const s = Math.abs(n) >= 1 ? n.toFixed(Math.abs(n % 1) < 1e-9 ? 0 : 4) : n.toFixed(8);
+  return s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "").replace(".", ",");
+};
+const fmtDay = (iso) => {
+  if (!iso) return "–";
+  const [y, m, d] = String(iso).split("-");
+  return d ? `${d}.${m}.${y}` : String(iso);
+};
 
 /* USD → Zielwährung, mit Fallback-Quelle (frankfurter.app ist unzuverlässig geworden) */
 async function fetchUsdRate(target) {
@@ -315,10 +329,105 @@ function fillForward(series, dates) {
   return out;
 }
 
+/* ---------- Positionen gruppieren, FIFO, Cash ---------- */
+/* Gleiches Asset = gleicher Schlüssel; Cash und Immobilien bleiben je Eintrag eigenständig. */
+function gkeyOf(i) {
+  if (i.type === "cash") return `cash:${i.id}`;
+  if (i.type === "immobilie") return `immobilie:${(i.name || i.id).toUpperCase()}`;
+  if (i.type === "rohstoff") return `rohstoff:${(i.commodity || i.symbol || "").toUpperCase()}`;
+  return `${i.type}:${(i.symbol || i.name || "").toUpperCase()}`;
+}
+
+/* FIFO: Verkäufe gegen die ältesten Käufe rechnen */
+function fifo(lots, sells) {
+  const open = lots
+    .map((l) => ({ id: l.id, qty: Number(l.qty) || 0, price: Number(l.buyPrice) || 0, date: l.buyDate || "" }))
+    .sort((a, b) => (a.date || "9999-12-31").localeCompare(b.date || "9999-12-31"));
+  const ss = [...sells].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  let realized = 0, soldQty = 0;
+  const matches = [];
+  for (const s of ss) {
+    const sQty = Number(s.qty) || 0;
+    const sPrice = Number(s.price) || 0;
+    let rest = sQty, cost = 0, matched = 0;
+    for (const l of open) {
+      if (rest <= 1e-10) break;
+      if (l.qty <= 1e-10) continue;
+      const take = Math.min(l.qty, rest);
+      cost += take * l.price;
+      l.qty -= take; rest -= take; matched += take;
+    }
+    soldQty += sQty;
+    const g = matched * sPrice - cost;
+    realized += g;
+    matches.push({ id: s.id, date: s.date, qty: sQty, price: sPrice, proceeds: sQty * sPrice, cost, realized: g });
+  }
+  const openQty = open.reduce((a, l) => a + l.qty, 0);
+  const openCost = open.reduce((a, l) => a + l.qty * l.price, 0);
+  return { open, openQty, openCost, realized, soldQty, matches };
+}
+
+/* Bestand und Einstandswert an einem Stichtag (für den Chart) */
+function fifoAt(lots, sells, d) {
+  return fifo(
+    lots.filter((l) => (l.buyDate || "") && l.buyDate <= d),
+    sells.filter((s) => (s.date || "") <= d),
+  );
+}
+
+const cashAmount = (i) => Number(i.price) || 0;
+const cashValue = (i, fx) => cashAmount(i) * (fx[i.ccy || CUR] || 1);
+/* Cash-Stand an einem Stichtag: heutiger Betrag minus alle späteren Zuflüsse */
+function cashAtDate(i, d) {
+  const flows = Array.isArray(i.flows) ? i.flows : [];
+  return cashAmount(i) - flows.filter((f) => (f.d || "") > d).reduce((a, f) => a + (Number(f.amt) || 0), 0);
+}
+
+/* Alle Positionen zu Gruppen zusammenfassen */
+function buildGroups(investments, sells, fx) {
+  const map = new Map();
+  for (const i of investments) {
+    const k = gkeyOf(i);
+    if (!map.has(k)) map.set(k, { gkey: k, type: i.type, name: i.name, ref: i, lots: [], sells: [] });
+    const g = map.get(k);
+    g.lots.push(i);
+    if ((Number(i.price) || 0) > 0 && (i.priceUpdated || 0) >= (g.ref.priceUpdated || 0)) g.ref = i;
+  }
+  for (const s of sells || []) {
+    const g = map.get(s.gkey);
+    if (g) g.sells.push(s);
+  }
+  const out = [];
+  for (const g of map.values()) {
+    g.price = Number(g.ref.price) || 0;
+    g.inChart = g.lots.some((l) => l.inChart !== false);
+    if (g.type === "cash") {
+      g.qty = 1;
+      g.value = cashValue(g.ref, fx);
+      g.cost = g.value;
+      g.realized = 0;
+      g.unreal = 0;
+    } else {
+      const f = fifo(g.lots, g.sells);
+      g.qty = f.openQty;
+      g.cost = f.openCost;
+      g.realized = f.realized;
+      g.soldQty = f.soldQty;
+      g.matches = f.matches;
+      g.value = g.qty * g.price;
+      g.unreal = g.value - g.cost;
+    }
+    g.gain = g.unreal + g.realized;
+    g.avgBuy = g.qty > 0 ? g.cost / g.qty : 0;
+    out.push(g);
+  }
+  return out;
+}
+
 const monthly = (item) =>
   item.interval === "jaehrlich" ? (Number(item.amount) || 0) / 12 : Number(item.amount) || 0;
 
-const EMPTY = { incomes: [], expenses: [], credits: [], investments: [] };
+const EMPTY = { incomes: [], expenses: [], credits: [], investments: [], sells: [] };
 const DATA_KEY = "finanz_state_v1";
 const SETTINGS_KEY = "finanz_settings_v1";
 
@@ -646,7 +755,16 @@ function InvestForm({ initial, onSave, finnhubKey }) {
           <Field label="Bezeichnung">
             <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder={f.type === "immobilie" ? "z. B. Eigenheim" : "z. B. Tagesgeld"} />
           </Field>
-          <Field label={f.type === "immobilie" ? `Aktueller Wert (${curSym()})` : `Betrag (${curSym()})`}>
+          {f.type === "cash" && (
+            <Field label="Währung des Kontos">
+              <div style={{ display: "flex", gap: 8 }}>
+                {CURRENCIES.map((c) => (
+                  <Btn key={c} kind={(f.ccy || CUR) === c ? "primary" : "ghost"} onClick={() => setF({ ...f, ccy: c })} style={{ flex: 1 }}>{c}</Btn>
+                ))}
+              </div>
+            </Field>
+          )}
+          <Field label={f.type === "immobilie" ? `Aktueller Wert (${curSym()})` : `Betrag (${f.ccy || CUR})`}>
             <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
           </Field>
           {f.type === "immobilie" && (
@@ -654,13 +772,18 @@ function InvestForm({ initial, onSave, finnhubKey }) {
               <input type="number" inputMode="decimal" value={f.buyPrice} onChange={(e) => setF({ ...f, buyPrice: e.target.value })} placeholder="0" />
             </Field>
           )}
+          {f.type === "cash" && (f.ccy || CUR) !== CUR && (
+            <div style={{ fontSize: 13, color: C.muted, margin: "-2px 0 12px", lineHeight: 1.4 }}>
+              Der Betrag wird mit dem aktuellen Wechselkurs in {CUR} umgerechnet.
+            </div>
+          )}
           <button type="button" className="fc-check" onClick={() => setF({ ...f, inChart: f.inChart === false })}>
             <span className={`box ${f.inChart !== false ? "on" : ""}`}>{f.inChart !== false && <Check size={13} strokeWidth={3} />}</span>
-            <span>Im Verlaufs-Chart anzeigen (nur mit Kurshistorie möglich)</span>
+            <span>{f.type === "cash" ? "Im Verlaufs-Chart anzeigen" : "Im Verlaufs-Chart anzeigen (nur mit Kurshistorie möglich)"}</span>
           </button>
           <Btn
             disabled={!f.name || !f.price}
-            onClick={() => onSave({ ...f, symbol: "", qty: 1, price: Number(f.price) || 0, buyPrice: Number(f.buyPrice) || Number(f.price) || 0 })}
+            onClick={() => onSave({ ...f, symbol: "", qty: 1, ccy: f.type === "cash" ? (f.ccy || CUR) : undefined, price: Number(f.price) || 0, buyPrice: f.type === "cash" ? Number(f.price) || 0 : Number(f.buyPrice) || Number(f.price) || 0 })}
           >Speichern</Btn>
         </>
       ) : (
@@ -712,6 +835,130 @@ function InvestForm({ initial, onSave, finnhubKey }) {
           >Speichern</Btn>
         </>
       )}
+    </div>
+  );
+}
+
+/* ---------- Verkaufen ---------- */
+function SellForm({ group, onSave }) {
+  const unit = group.type === "rohstoff" ? (group.ref.unit || "Einheiten") : "Stück";
+  const [f, setF] = useState({ qty: "", price: group.price ? String(group.price) : "", date: todayIso() });
+  const qty = Number(f.qty) || 0;
+  const price = Number(f.price) || 0;
+  const tooMuch = qty > group.qty + 1e-9;
+  /* Vorschau: welcher Gewinn wird nach FIFO realisiert? */
+  const preview = useMemo(() => {
+    if (!qty || !price) return null;
+    const f2 = fifo(group.lots, [...group.sells, { id: "_p", qty, price, date: f.date || todayIso() }]);
+    const m = f2.matches.find((x) => x.id === "_p");
+    return m ? m.realized : null;
+  }, [qty, price, f.date, group]);
+
+  return (
+    <div className="fc-form">
+      <div className="fc-detail-note" style={{ marginBottom: 14 }}>
+        Verfügbar: <b>{fmtQty(group.qty)} {unit}</b> · Ø Kaufkurs {eurFull(group.avgBuy)}
+      </div>
+      <div className="fc-row2">
+        <Field label={`Menge (${unit})`}>
+          <input type="number" inputMode="decimal" value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} placeholder="0" autoFocus />
+        </Field>
+        <Field label={`Verkaufskurs (${curSym()})`}>
+          <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
+        </Field>
+      </div>
+      <Field label="Verkaufsdatum">
+        <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
+      </Field>
+      <button type="button" className="fc-mini" onClick={() => setF({ ...f, qty: String(group.qty) })}>Alles verkaufen</button>
+      {tooMuch && <div style={{ margin: "0 0 12px", fontSize: 13, color: C.error }}>Mehr als der Bestand ({fmtQty(group.qty)} {unit}) lässt sich nicht verkaufen.</div>}
+      {!tooMuch && qty > 0 && price > 0 && (
+        <div className="fc-detail-note" style={{ marginBottom: 14 }}>
+          Erlös <b>{eurFull(qty * price)}</b> wird deinem Cash-Konto in {CUR} zugebucht.
+          {preview != null && <> Realisierter Gewinn nach FIFO: <b style={{ color: preview >= 0 ? C.positive : C.error }}>{preview >= 0 ? "+" : ""}{eurFull(preview)}</b>.</>}
+        </div>
+      )}
+      <Btn disabled={!qty || !price || tooMuch} onClick={() => onSave({ qty, price, date: f.date || todayIso() })}>Verkauf buchen</Btn>
+    </div>
+  );
+}
+
+/* ---------- Asset-Detail: alle Käufe und Verkäufe einer Position ---------- */
+function AssetDetail({ group, onAddLot, onEditLot, onDeleteLot, onSell, onDeleteSell }) {
+  const [armed, setArmed] = useState(null);
+  const unit = group.type === "rohstoff" ? (group.ref.unit || "Einheiten") : "Stück";
+  const lots = [...group.lots].sort((a, b) => (a.buyDate || "9999-12-31").localeCompare(b.buyDate || "9999-12-31"));
+  const sells = [...group.sells].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const realizedById = {};
+  for (const m of group.matches || []) realizedById[m.id] = m.realized;
+  const pct = group.cost > 0 ? (group.unreal / group.cost) * 100 : 0;
+  const del = (id, fn) => { if (armed !== id) { setArmed(id); setTimeout(() => setArmed((p) => (p === id ? null : p)), 3500); return; } setArmed(null); fn(); };
+
+  return (
+    <div>
+      <div className="fc-detail-kpis">
+        <div><span className="l">Wert</span><span className="v">{eur(group.value)}</span></div>
+        <div><span className="l">Bestand</span><span className="v">{fmtQty(group.qty)} {unit}</span></div>
+        <div><span className="l">Ø Kaufkurs</span><span className="v">{eurFull(group.avgBuy)}</span></div>
+        <div><span className="l">Aktueller Kurs</span><span className="v">{eurFull(group.price)}</span></div>
+        <div>
+          <span className="l">Nicht realisiert</span>
+          <span className="v" style={{ color: group.unreal >= 0 ? C.positive : C.error }}>
+            {group.unreal >= 0 ? "+" : ""}{eur(group.unreal)}{group.cost > 0 ? ` · ${pct >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} %` : ""}
+          </span>
+        </div>
+        <div>
+          <span className="l">Realisiert (FIFO)</span>
+          <span className="v" style={{ color: group.realized > 0 ? C.positive : group.realized < 0 ? C.error : C.muted }}>
+            {group.realized >= 0 ? "+" : ""}{eur(group.realized)}
+          </span>
+        </div>
+      </div>
+
+      <div className="fc-detail-sec">Käufe</div>
+      {lots.map((l) => (
+        <div className="fc-detail-row" key={l.id}>
+          <div className="m" onClick={() => onEditLot(l)}>
+            <div className="t">{fmtQty(l.qty)} {unit} × {eurFull(l.buyPrice || 0)}</div>
+            <div className="s">{l.buyDate ? fmtDay(l.buyDate) : "ohne Kaufdatum"}{l.inChart === false ? " · nicht im Chart" : ""}</div>
+          </div>
+          <div className="r">
+            <span className="a">{eur((Number(l.qty) || 0) * (Number(l.buyPrice) || 0))}</span>
+            <button className={`fc-del ${armed === l.id ? "armed" : ""}`} onClick={() => del(l.id, () => onDeleteLot(l.id))} aria-label="Kauf löschen">{armed === l.id ? "Löschen" : "–"}</button>
+          </div>
+        </div>
+      ))}
+
+      {sells.length > 0 && (
+        <>
+          <div className="fc-detail-sec">Verkäufe</div>
+          {sells.map((s) => (
+            <div className="fc-detail-row" key={s.id}>
+              <div className="m">
+                <div className="t">{fmtQty(s.qty)} {unit} × {eurFull(s.price || 0)}</div>
+                <div className="s">
+                  {fmtDay(s.date)} · realisiert{" "}
+                  <b style={{ color: (realizedById[s.id] || 0) >= 0 ? C.positive : C.error }}>
+                    {(realizedById[s.id] || 0) >= 0 ? "+" : ""}{eurFull(realizedById[s.id] || 0)}
+                  </b>
+                </div>
+              </div>
+              <div className="r">
+                <span className="a">{eur((Number(s.qty) || 0) * (Number(s.price) || 0))}</span>
+                <button className={`fc-del ${armed === s.id ? "armed" : ""}`} onClick={() => del(s.id, () => onDeleteSell(s.id))} aria-label="Verkauf löschen">{armed === s.id ? "Löschen" : "–"}</button>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      <div style={{ display: "flex", gap: 12, marginTop: 18 }}>
+        <Btn onClick={onAddLot}>Zukauf</Btn>
+        <Btn kind="ghost" disabled={group.qty <= 0} onClick={onSell}>Verkaufen</Btn>
+      </div>
+      <div className="fc-detail-note" style={{ marginTop: 12 }}>
+        Verkäufe werden nach FIFO abgerechnet: die ältesten Käufe gehen zuerst. Der Erlös landet auf deinem Cash-Konto.
+      </div>
     </div>
   );
 }
@@ -838,40 +1085,48 @@ const RANGES = [
   { id: "MAX", label: "Max", days: 0 },
 ];
 
-function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark }) {
+/* Datenschlüssel einer Gruppe im Historien-Cache */
+const histKeyOf = (g, cur) => g.type === "krypto"
+  ? `cg:${g.ref.coinId || (g.ref.symbol || "").toUpperCase()}:${cur}`
+  : `td:${(g.ref.symbol || "").toUpperCase()}`;
+
+function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBenchmark }) {
   const [range, setRange] = useState("6M");
   const [mode, setMode] = useState("value");
   const [state, setState] = useState({ loading: false, rows: [], notes: [], err: "" });
 
-  /* Positionen mit Historie, Kaufdatum und Chart-Häkchen */
-  const eligible = useMemo(() => investments.filter((i) =>
-    HIST_TYPES.includes(i.type) && i.inChart !== false && i.buyDate && Number(i.qty) > 0 && (i.symbol || i.coinId)
-  ), [investments]);
-  const skipped = useMemo(() => investments.filter((i) =>
-    i.inChart !== false && !eligible.includes(i) && Number(i.qty) > 0
-  ), [investments, eligible]);
+  /* Gruppen mit Kurshistorie, Kaufdatum und Chart-Häkchen */
+  const eligible = useMemo(() => groups.filter((g) =>
+    HIST_TYPES.includes(g.type) && g.inChart && (g.ref.symbol || g.ref.coinId) && g.lots.some((l) => l.buyDate && l.inChart !== false)
+  ), [groups]);
+  const cashGroups = useMemo(() => groups.filter((g) => g.type === "cash" && g.inChart), [groups]);
+  const skipped = useMemo(() => groups.filter((g) =>
+    g.type !== "cash" && g.inChart && g.qty > 0 && !eligible.includes(g)
+  ), [groups, eligible]);
 
   const activeBms = BENCHMARKS.filter((b) => benchmarks.includes(b.id));
-  const eligKey = eligible.map((i) => `${i.symbol}|${i.qty}|${i.buyDate}`).join(",");
+  const eligKey = eligible.map((g) => `${g.gkey}|${g.lots.map((l) => `${l.qty}@${l.buyDate}`).join("+")}|${g.sells.map((s) => `${s.qty}@${s.date}`).join("+")}`).join(",");
+  const cashKey = cashGroups.map((g) => `${g.gkey}|${cashAmount(g.ref)}|${g.ref.ccy || cur}|${(g.ref.flows || []).length}`).join(",");
   const bmKey = benchmarks.join(",");
 
   useEffect(() => {
     let cancelled = false;
     async function build() {
-      if (!eligible.length) { setState({ loading: false, rows: [], notes: [], err: "" }); return; }
+      if (!eligible.length && !cashGroups.length) { setState({ loading: false, rows: [], notes: [], err: "" }); return; }
       setState((s) => ({ ...s, loading: true, err: "" }));
       const notes = [];
       const hist = loadHist();
       const today = todayIso();
-      const earliest = eligible.map((i) => i.buyDate).sort()[0];
+      const buyDates = eligible.flatMap((g) => g.lots.map((l) => l.buyDate).filter(Boolean));
+      const earliest = buyDates.length ? buyDates.sort()[0] : addDays(today, -180);
       const startAll = earliest < addDays(today, -1825) ? addDays(today, -1825) : earliest;
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
       /* --- benötigte Serien laden (Tages-Cache) --- */
       const need = [];
-      for (const i of eligible) {
-        if (i.type === "krypto") need.push({ key: `cg:${i.coinId || (i.symbol || "").toUpperCase()}:${cur}`, kind: "crypto", i });
-        else need.push({ key: `td:${(i.symbol || "").toUpperCase()}`, kind: "stock", sym: (i.symbol || "").toUpperCase() });
+      for (const g of eligible) {
+        if (g.type === "krypto") need.push({ key: histKeyOf(g, cur), kind: "crypto", g });
+        else need.push({ key: histKeyOf(g, cur), kind: "stock", sym: (g.ref.symbol || "").toUpperCase() });
       }
       for (const b of activeBms) need.push({ key: `td:${b.sym}`, kind: "stock", sym: b.sym, bm: b });
 
@@ -885,8 +1140,8 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
         if (c && c.fetched === today && c.series) continue;
         try {
           if (n.kind === "crypto") {
-            const coinId = n.i.coinId || CRYPTO_IDS[(n.i.symbol || "").toUpperCase()];
-            if (!coinId) { notes.push(`${n.i.name}: keine Krypto-ID`); continue; }
+            const coinId = n.g.ref.coinId || CRYPTO_IDS[(n.g.ref.symbol || "").toUpperCase()];
+            if (!coinId) { notes.push(`${n.g.name}: keine Krypto-ID`); continue; }
             const days = Math.min(CRYPTO_MAX_DAYS, Math.max(2, daysBetween(startAll, today) + 1));
             const r = await fetchCryptoHistory(coinId, cur, days);
             hist[n.key] = { fetched: today, ccy: r.ccy, series: r.series };
@@ -900,7 +1155,7 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
         } catch (e) {
           if (String(e.message) === "PLAN") planBlocked.push(n.sym || n.key);
           else if (String(e.message) === "LIMIT") { limitHit = true; break; }
-          else notes.push(`${n.sym || (n.i && n.i.name)}: keine Historie`);
+          else notes.push(`${n.sym || (n.g && n.g.name)}: keine Historie`);
         }
       }
       saveHist(hist);
@@ -908,9 +1163,10 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
       if (limitHit) notes.push("Datenlimit erreicht – in 1 Minute erneut öffnen");
       if (cancelled) return;
 
-      /* --- Wechselkurse für Fremdwährungen --- */
+      /* --- Wechselkurse für Fremdwährungen (Kurse und Cash-Konten) --- */
       const needFx = new Set();
       for (const n of uniq) { const h = hist[n.key]; if (h && h.ccy && h.ccy !== cur) needFx.add(h.ccy); }
+      for (const g of cashGroups) { const c = g.ref.ccy || cur; if (c !== cur) needFx.add(c); }
       const fx = {};
       for (const ccy of needFx) {
         const fxKey = `fx:${ccy}:${cur}`;
@@ -933,16 +1189,19 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
       const fxFilled = {};
       for (const [ccy, s] of Object.entries(fx)) fxFilled[ccy] = fillForward(s, dates);
 
-      /* Zeitgewichtete Rendite: Zukäufe verzerren die Kurve nicht,
-         dadurch ist der Vergleich mit den Indizes fair. */
+      /* Zeitgewichtete Rendite über die Wertpapiere: Zu- und Verkäufe verzerren die
+         Kurve nicht, dadurch ist der Vergleich mit den Indizes fair. Cash zählt nur im Wert. */
+      const chartLots = new Map();
+      for (const g of eligible) chartLots.set(g.gkey, g.lots.filter((l) => l.inChart !== false && l.buyDate));
       const rows = [];
       let twr = 100, prev = null;
       for (const d of dates) {
-        let value = 0, invested = 0, any = false;
+        let assets = 0, invested = 0, any = false;
         const px = {};
-        for (const i of eligible) {
-          if (i.buyDate > d) continue;
-          const key = i.type === "krypto" ? `cg:${i.coinId || (i.symbol || "").toUpperCase()}:${cur}` : `td:${(i.symbol || "").toUpperCase()}`;
+        for (const g of eligible) {
+          const pos = fifoAt(chartLots.get(g.gkey) || [], g.sells, d);
+          if (pos.openQty <= 1e-10) continue;
+          const key = histKeyOf(g, cur);
           const ser = filled[key];
           const raw = ser && ser[d];
           if (raw == null) continue;
@@ -950,23 +1209,30 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
           const rate = h && h.ccy && h.ccy !== cur ? (fxFilled[h.ccy] && fxFilled[h.ccy][d]) : 1;
           if (rate == null) continue;
           const p = raw * rate;
-          px[i.id] = p;
-          value += Number(i.qty) * p;
-          invested += Number(i.qty) * (Number(i.buyPrice) || 0);
+          px[g.gkey] = { p, qty: pos.openQty };
+          assets += pos.openQty * p;
+          invested += pos.openCost;
           any = true;
         }
-        if (!any) continue;
+        /* Cash: heutiger Stand minus alle späteren Zuflüsse, in Anzeigewährung */
+        let cash = 0;
+        for (const g of cashGroups) {
+          const ccy = g.ref.ccy || cur;
+          const r = ccy === cur ? 1 : ((fxFilled[ccy] && fxFilled[ccy][d]) ?? (fxRates && fxRates[ccy]) ?? 1);
+          cash += cashAtDate(g.ref, d) * r;
+        }
+        if (!any && cash === 0) continue;
         if (prev) {
           let num = 0, den = 0;
-          for (const i of eligible) {
-            const a = prev.px[i.id], b = px[i.id];
-            if (a == null || b == null) continue;
-            num += Number(i.qty) * b;
-            den += Number(i.qty) * a;
+          for (const k of Object.keys(prev.px)) {
+            const a = prev.px[k], b = px[k];
+            if (!a || !b) continue;
+            num += a.qty * b.p;
+            den += a.qty * a.p;
           }
           if (den > 0) twr *= num / den;
         }
-        const row = { d, value, invested, gain: value - invested, twr };
+        const row = { d, value: assets + cash, assets, cash, invested, gain: assets - invested, twr };
         for (const b of activeBms) {
           const ser = filled[`td:${b.sym}`];
           row["bm_" + b.id] = ser && ser[d] != null ? ser[d] : null;
@@ -979,7 +1245,7 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
     }
     build();
     return () => { cancelled = true; };
-  }, [eligKey, bmKey, cur, tdKey]);
+  }, [eligKey, cashKey, bmKey, cur, tdKey]);
 
   /* --- Zeitraum zuschneiden, Benchmarks auf Startpunkt normalisieren --- */
   const view = useMemo(() => {
@@ -1008,8 +1274,16 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
   }, [state.rows, range, bmKey]);
 
   const showPerf = mode === "perf" || activeBms.length > 0;
-  /* Wertänderung ohne Zukäufe (Differenz der Buchgewinne) und zeitgewichtete Rendite */
-  const chg = view.first && view.last ? view.last.gain - view.first.gain : 0;
+  /* Gewinnänderung im Zeitraum: Buchgewinn-Differenz plus die in dieser Zeit realisierten Gewinne */
+  const realizedWin = useMemo(() => {
+    if (!view.first || !view.last) return 0;
+    let sum = 0;
+    for (const g of eligible) for (const m of g.matches || []) {
+      if (m.date && m.date > view.first.d && m.date <= view.last.d) sum += m.realized;
+    }
+    return sum;
+  }, [view.first, view.last, eligible]);
+  const chg = view.first && view.last ? (view.last.gain - view.first.gain) + realizedWin : 0;
   const chgPct = view.first && view.last && view.first.twr ? (view.last.twr / view.first.twr - 1) * 100 : 0;
   const fmtDate = (d) => { const x = new Date(d); return `${String(x.getDate()).padStart(2, "0")}.${String(x.getMonth() + 1).padStart(2, "0")}.${String(x.getFullYear()).slice(2)}`; };
   const compact = (v) => { const a = Math.abs(v); if (a >= 1e6) return (v / 1e6).toFixed(1).replace(".", ",") + " Mio"; if (a >= 1e3) return Math.round(v / 1e3) + "k"; return String(Math.round(v)); };
@@ -1018,7 +1292,11 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
     <Card style={{ paddingBottom: 12 }}>
       <div className="fc-chart-head">
         <div>
-          <div className="lbl">Wertentwicklung{eligible.length && eligible.length < investments.length ? ` · ${eligible.length} von ${investments.length} Positionen` : ""}</div>
+          <div className="lbl">
+            Wertentwicklung
+            {(() => { const inChart = eligible.length + cashGroups.length; return inChart && inChart < groups.length ? ` · ${inChart} von ${groups.length} Positionen` : ""; })()}
+            {showPerf && cashGroups.length > 0 ? " · ohne Cash" : ""}
+          </div>
           <div className="val">{view.last ? eur(view.last.value) : "–"}</div>
           {view.first && view.last && (
             <div className="chg" style={{ color: chg >= 0 ? C.positive : C.error }}>
@@ -1100,7 +1378,24 @@ export default function App() {
   const [locked, setLocked] = useState(() => { try { const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); return !!s.lockEnabled; } catch { return false; } });
   const [lockMsg, setLockMsg] = useState("");
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [fxRates, setFxRates] = useState({ EUR: 1, USD: 1, CHF: 1 });
   const importRef = useRef(null);
+
+  /* Wechselkurse für Cash-Konten in Fremdwährung (1 Einheit → Anzeigewährung) */
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      const cur = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
+      const others = CURRENCIES.filter((c) => c !== cur);
+      const next = { [cur]: 1 };
+      for (const c of others) {
+        const r = await fetchFx(c, cur);
+        next[c] = r > 0 ? r : 1;
+      }
+      if (!dead) setFxRates(next);
+    })();
+    return () => { dead = true; };
+  }, [settings.currency]);
 
   /* Speichern (debounced) */
   useEffect(() => {
@@ -1216,9 +1511,15 @@ export default function App() {
     })).filter((c) => c.value > 0),
   [data.expenses]);
 
-  const portfolioValue = useMemo(() => data.investments.reduce((s, i) => s + i.qty * (i.price || 0), 0), [data.investments]);
-  const portfolioCost = useMemo(() => data.investments.reduce((s, i) => s + i.qty * (i.buyPrice || 0), 0), [data.investments]);
-  const gain = portfolioValue - portfolioCost;
+  /* Positionen zu Gruppen zusammenfassen (mehrere Käufe eines Assets = eine Zeile) */
+  const groups = useMemo(
+    () => buildGroups(data.investments, data.sells || [], fxRates),
+    [data.investments, data.sells, fxRates],
+  );
+  const portfolioValue = useMemo(() => groups.reduce((s, g) => s + g.value, 0), [groups]);
+  const portfolioCost = useMemo(() => groups.reduce((s, g) => s + g.cost, 0), [groups]);
+  const realizedTotal = useMemo(() => groups.reduce((s, g) => s + g.realized, 0), [groups]);
+  const gain = portfolioValue - portfolioCost + realizedTotal;
   const netWorth = portfolioValue - creditBalance;
   const lastPriceUpdate = useMemo(() => {
     const ts = data.investments.map((i) => i.priceUpdated || 0);
@@ -1243,6 +1544,65 @@ export default function App() {
     setData((d) => ({ ...d, [key]: d[key].filter((x) => x.id !== id) }));
     setPendingDelete(null);
   };
+
+  /* ---------- Verkäufe (FIFO) und Cash ---------- */
+  /* Erlös landet automatisch auf dem Cash-Konto in der Anzeigewährung */
+  function bookSell(gkey, s) {
+    const cur = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
+    const sellId = uid();
+    const date = s.date || todayIso();
+    const proceeds = (Number(s.qty) || 0) * (Number(s.price) || 0);
+    setData((d) => {
+      const sells = [...(d.sells || []), { id: sellId, gkey, qty: Number(s.qty) || 0, price: Number(s.price) || 0, date }];
+      const flow = { id: sellId, d: date, amt: proceeds };
+      const idx = d.investments.findIndex((x) => x.type === "cash" && (x.ccy || cur) === cur);
+      let investments;
+      if (idx >= 0) {
+        investments = d.investments.map((x, k) => {
+          if (k !== idx) return x;
+          const amt = (Number(x.price) || 0) + proceeds;
+          return { ...x, price: amt, buyPrice: amt, flows: [...(x.flows || []), flow] };
+        });
+      } else {
+        investments = [...d.investments, {
+          id: uid(), type: "cash", name: `Cash ${cur}`, ccy: cur, symbol: "",
+          qty: 1, price: proceeds, buyPrice: proceeds, inChart: true, flows: [flow],
+        }];
+      }
+      return { ...d, sells, investments };
+    });
+    setSheet(null);
+  }
+
+  /* Verkauf zurücknehmen: Erlös wieder aus dem Cash-Konto herausrechnen */
+  function removeSell(id) {
+    setData((d) => {
+      const s = (d.sells || []).find((x) => x.id === id);
+      if (!s) return d;
+      const amt = (Number(s.qty) || 0) * (Number(s.price) || 0);
+      const investments = d.investments.map((x) => {
+        if (x.type !== "cash" || !(x.flows || []).some((f) => f.id === id)) return x;
+        const rest = (Number(x.price) || 0) - amt;
+        return { ...x, price: rest, buyPrice: rest, flows: x.flows.filter((f) => f.id !== id) };
+      });
+      return { ...d, sells: d.sells.filter((x) => x.id !== id), investments };
+    });
+  }
+
+  /* Ganze Gruppe löschen: alle Käufe und Verkäufe des Assets */
+  function removeGroup(gkey) {
+    if (pendingDelete !== gkey) {
+      setPendingDelete(gkey);
+      setTimeout(() => setPendingDelete((p) => (p === gkey ? null : p)), 3500);
+      return;
+    }
+    setData((d) => ({
+      ...d,
+      investments: d.investments.filter((x) => gkeyOf(x) !== gkey),
+      sells: (d.sells || []).filter((x) => x.gkey !== gkey),
+    }));
+    setPendingDelete(null);
+  }
 
   /* ---------- Live-Kurse: CoinGecko (Krypto) + Finnhub (Aktien/ETF) ---------- */
   async function refreshPrices() {
@@ -1457,6 +1817,7 @@ export default function App() {
           expenses: Array.isArray(d.expenses) ? d.expenses : [],
           credits: Array.isArray(d.credits) ? d.credits : [],
           investments: Array.isArray(d.investments) ? d.investments : [],
+          sells: Array.isArray(d.sells) ? d.sells : [],
         };
         setData(clean);
         /* API-Keys & Einstellungen übernehmen – App-Sperre bleibt gerätegebunden */
@@ -1471,7 +1832,7 @@ export default function App() {
             tdKey: s.tdKey != null ? s.tdKey : prev.tdKey,
           }));
         }
-        const n = clean.incomes.length + clean.expenses.length + clean.credits.length + clean.investments.length;
+        const n = clean.incomes.length + clean.expenses.length + clean.credits.length + clean.investments.length + clean.sells.length;
         setSheet(null);
         setPriceStatus(`Backup importiert – ${n} Einträge${s ? " inkl. API-Keys" : ""}`);
         setTimeout(() => setPriceStatus(""), 8000);
@@ -1618,6 +1979,19 @@ export default function App() {
         .fc-check{display:flex;align-items:center;gap:10px;background:none;border:none;padding:2px 0 14px;color:${C.body};font-size:14px;cursor:pointer;font-family:inherit;text-align:left;width:100%;}
         .fc-check .box{width:20px;height:20px;border-radius:5px;border:1.5px solid ${C.borderStrong};display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;}
         .fc-check .box.on{background:${C.rausch};border-color:${C.rausch};}
+        .fc-detail-kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;background:${C.soft};border-radius:14px;padding:14px;margin-bottom:4px;}
+        .fc-detail-kpis .l{display:block;font-size:12.5px;color:${C.muted};}
+        .fc-detail-kpis .v{display:block;font-size:16px;font-weight:700;margin-top:1px;font-variant-numeric:tabular-nums;color:${C.ink};}
+        .fc-detail-sec{margin:20px 0 4px;font-size:15px;font-weight:700;color:${C.ink};}
+        .fc-detail-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid ${C.hairlineSoft};}
+        .fc-detail-row:last-child{border-bottom:none;}
+        .fc-detail-row .m{flex:1;min-width:0;cursor:pointer;}
+        .fc-detail-row .t{font-size:15px;font-weight:600;color:${C.ink};font-variant-numeric:tabular-nums;}
+        .fc-detail-row .s{font-size:13px;color:${C.muted};margin-top:1px;}
+        .fc-detail-row .r{display:flex;align-items:center;gap:10px;}
+        .fc-detail-row .a{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;color:${C.body};}
+        .fc-detail-note{font-size:12.5px;line-height:1.45;color:${C.muted};}
+        .fc-mini{background:none;border:none;color:${C.rausch};font-size:13px;font-weight:600;padding:0 0 12px;cursor:pointer;font-family:inherit;text-decoration:underline;}
         .fc-chip{display:inline-flex;align-items:center;gap:4px;border:none;background:${C.strong};color:${C.ink};font-size:11px;font-weight:600;padding:4px 9px;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-chip:active{background:${C.borderStrong};}
         .fc-seg{display:flex;background:${C.soft};border-radius:9999px;padding:4px;margin:14px 16px 4px;gap:4px;}
@@ -1756,7 +2130,7 @@ export default function App() {
               <SectionTitle>Vermögen</SectionTitle>
               <Card>
                 <div className="fc-item">
-                  <div className="fc-item-main"><div className="fc-item-title">Gesamtvermögen</div><div className="fc-item-sub">{data.investments.length} Position(en)</div></div>
+                  <div className="fc-item-main"><div className="fc-item-title">Gesamtvermögen</div><div className="fc-item-sub">{groups.length} Position(en)</div></div>
                   <div className="fc-item-value">{eurM(portfolioValue)}</div>
                 </div>
                 <div className="fc-item">
@@ -1935,12 +2309,25 @@ export default function App() {
       {/* ---------- Investments ---------- */}
       {tab === "invest" && (
         <>
-          {data.investments.length > 0 && (
+          <div className="fc-kpis">
+            <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v">{eur(portfolioValue)}</div></div>
+            <div className="fc-kpi">
+              <div className="l">Gewinn / Verlust</div>
+              <div className="v" style={{ color: gain >= 0 ? C.positive : C.error }}>{gain >= 0 ? "+" : ""}{eur(gain)}</div>
+              {realizedTotal !== 0 && (
+                <div style={{ fontSize: 12.5, marginTop: 3, color: C.muted }}>
+                  davon realisiert: {realizedTotal >= 0 ? "+" : ""}{eur(realizedTotal)}
+                </div>
+              )}
+            </div>
+          </div>
+          {groups.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <PortfolioChart
-                investments={data.investments}
+                groups={groups}
                 cur={CURRENCIES.includes(settings.currency) ? settings.currency : "EUR"}
                 tdKey={settings.tdKey || ""}
+                fxRates={fxRates}
                 benchmarks={Array.isArray(settings.chartBenchmarks) ? settings.chartBenchmarks : []}
                 onToggleBenchmark={(id) => setSettings((s) => {
                   const list = Array.isArray(s.chartBenchmarks) ? s.chartBenchmarks : [];
@@ -1949,59 +2336,59 @@ export default function App() {
               />
             </div>
           )}
-          <div className="fc-kpis">
-            <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v">{eur(portfolioValue)}</div></div>
-            <div className="fc-kpi"><div className="l">Gewinn / Verlust</div><div className="v" style={{ color: gain >= 0 ? C.positive : C.error }}>{gain >= 0 ? "+" : ""}{eur(gain)}</div></div>
-          </div>
-          <div style={{ height: 12 }} />
-          {data.investments.length > 1 && (
+          {groups.length > 1 && (
             <div className="fc-seg" role="tablist">
               <button className={investSort === "size" ? "active" : ""} onClick={() => setInvestSort("size")}>Nach Grösse</button>
               <button className={investSort === "type" ? "active" : ""} onClick={() => setInvestSort("type")}>Nach Art</button>
             </div>
           )}
           {priceStatus && <div className="fc-status">{priceStatus}</div>}
-          {data.investments.length === 0
-            ? <Empty text="Erfasse Aktien, ETFs und Krypto – der Ticker reicht, Name und Logo kommen automatisch. Auch Immobilien und Cash lassen sich als Position anlegen." />
-            : <Card>{[...data.investments].sort((a, b) => {
-                const va = a.qty * (a.price || 0), vb = b.qty * (b.price || 0);
+          {groups.length === 0
+            ? <Empty text="Erfasse Aktien, ETFs und Krypto – der Ticker reicht, Name und Logo kommen automatisch. Auch Immobilien und Cash-Konten lassen sich als Position anlegen." />
+            : <Card>{[...groups].sort((a, b) => {
                 if (investSort === "type") {
-                  const ord = { aktie: 0, etf: 1, krypto: 2, immobilie: 3, cash: 4 };
+                  const ord = { aktie: 0, etf: 1, krypto: 2, rohstoff: 3, immobilie: 4, cash: 5 };
                   const d = (ord[a.type] ?? 9) - (ord[b.type] ?? 9);
                   if (d !== 0) return d;
                 }
-                return vb - va;
-              }).map((i) => {
-                const val = i.qty * (i.price || 0);
-                const g = val - i.qty * (i.buyPrice || 0);
-                const isValue = VALUE_TYPES.includes(i.type);
-                const showPct = i.type !== "cash" && i.buyPrice > 0 && i.buyPrice !== i.price;
-                const pct = showPct ? ((i.price - i.buyPrice) / i.buyPrice) * 100 : 0;
-                const typeLabel = INVEST_TYPES.find((t) => t.id === i.type)?.label || "";
-                const sub = isValue
-                  ? typeLabel
-                  : `${String(i.qty).replace(".", ",")} ${i.type === "rohstoff" ? (i.unit || "Einheiten") : "Stück"} · Kurs ${eurFull(i.price || 0)}${i.priceUpdated ? "" : " · noch kein Live-Kurs"}`;
+                return b.value - a.value;
+              }).map((g) => {
+                const isCash = g.type === "cash";
+                const isValue = VALUE_TYPES.includes(g.type);
+                const unit = g.type === "rohstoff" ? (g.ref.unit || "Einheiten") : "Stück";
+                const ccy = g.ref.ccy || CUR;
+                const showPct = !isCash && g.cost > 0;
+                const pct = showPct ? (g.unreal / g.cost) * 100 : 0;
+                const sub = isCash
+                  ? (ccy !== CUR ? `${money(cashAmount(g.ref), ccy)} · Kurs ${(fxRates[ccy] || 1).toFixed(4).replace(".", ",")}` : "Cash-Konto")
+                  : g.type === "immobilie"
+                    ? "Immobilie"
+                    : g.qty > 0
+                      ? `${fmtQty(g.qty)} ${unit} · Kurs ${eurFull(g.price)}`
+                        + (g.lots.length > 1 ? ` · ${g.lots.length} Käufe` : "")
+                        + (g.sells.length ? ` · ${g.sells.length} verkauft` : "")
+                      : `verkauft · realisiert ${g.realized >= 0 ? "+" : ""}${eurFull(g.realized)}`;
                 return (
-                  <ListItem key={i.id}
+                  <ListItem key={g.gkey}
                     lead={isValue
-                      ? <Lead icon={i.type === "immobilie" ? Home : Banknote} />
-                      : i.type === "rohstoff"
+                      ? <Lead icon={g.type === "immobilie" ? Home : Banknote} />
+                      : g.type === "rohstoff"
                         ? <Lead icon={Gem} />
-                        : <AssetLogo inv={i} />}
-                    armed={pendingDelete === i.id}
-                    title={i.name}
+                        : <AssetLogo inv={g.ref} />}
+                    armed={pendingDelete === g.gkey}
+                    title={g.name}
                     sub={sub}
                     value={
                       <span>
-                        {eur(val)}<br />
-                        <span className="fc-gain" style={{ color: showPct ? (g >= 0 ? C.positive : C.error) : C.mutedSoft }}>
-                          {showPct ? `${g >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} %` : "–"}
+                        {eur(g.value)}<br />
+                        <span className="fc-gain" style={{ color: showPct ? (g.unreal >= 0 ? C.positive : C.error) : C.mutedSoft }}>
+                          {showPct ? `${g.unreal >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} %` : "–"}
                         </span>
                       </span>
                     }
-                    note={priceFailIds.includes(i.id) ? "Keine Live-Daten – zum manuellen Eintragen tippen" : null}
-                    onEdit={() => setSheet({ type: "invest", item: i })}
-                    onDelete={() => remove("investments", i.id)}
+                    note={g.lots.some((l) => priceFailIds.includes(l.id)) ? "Keine Live-Daten – zum manuellen Eintragen tippen" : null}
+                    onEdit={() => setSheet(isValue ? { type: "invest", item: g.ref } : { type: "group", gkey: g.gkey })}
+                    onDelete={() => removeGroup(g.gkey)}
                   />
                 );
               })}</Card>}
@@ -2038,10 +2425,50 @@ export default function App() {
         </Sheet>
       )}
       {sheet?.type === "invest" && (
-        <Sheet title={sheet.item ? "Position bearbeiten" : "Neue Position"} onClose={() => setSheet(null)}>
-          <InvestForm initial={sheet.item} onSave={(f) => save("investments", f)} finnhubKey={settings.finnhubKey} />
+        <Sheet
+          title={sheet.item ? "Kauf bearbeiten" : sheet.preset ? `${sheet.preset.name} zukaufen` : "Neue Position"}
+          onClose={() => setSheet(sheet.back ? { type: "group", gkey: sheet.back } : null)}
+        >
+          <InvestForm
+            initial={sheet.item || sheet.preset}
+            onSave={(f) => { save("investments", f); if (sheet.back) setSheet({ type: "group", gkey: sheet.back }); }}
+            finnhubKey={settings.finnhubKey}
+          />
         </Sheet>
       )}
+      {sheet?.type === "group" && (() => {
+        const g = groups.find((x) => x.gkey === sheet.gkey);
+        if (!g) return null;
+        return (
+          <Sheet title={g.name} onClose={() => setSheet(null)}>
+            <AssetDetail
+              group={g}
+              onAddLot={() => setSheet({
+                type: "invest",
+                back: g.gkey,
+                preset: {
+                  type: g.type, symbol: g.ref.symbol || "", name: g.name, logoUrl: g.ref.logoUrl || "",
+                  coinId: g.ref.coinId, commodity: g.ref.commodity, unit: g.ref.unit,
+                  qty: "", buyPrice: "", buyDate: "", price: g.price ? String(g.price) : "", inChart: g.inChart,
+                },
+              })}
+              onEditLot={(l) => setSheet({ type: "invest", item: l, back: g.gkey })}
+              onDeleteLot={(id) => setData((d) => ({ ...d, investments: d.investments.filter((x) => x.id !== id) }))}
+              onSell={() => setSheet({ type: "sell", gkey: g.gkey })}
+              onDeleteSell={removeSell}
+            />
+          </Sheet>
+        );
+      })()}
+      {sheet?.type === "sell" && (() => {
+        const g = groups.find((x) => x.gkey === sheet.gkey);
+        if (!g) return null;
+        return (
+          <Sheet title={`${g.name} verkaufen`} onClose={() => setSheet({ type: "group", gkey: g.gkey })}>
+            <SellForm group={g} onSave={(s) => bookSell(g.gkey, s)} />
+          </Sheet>
+        );
+      })()}
       {sheet?.type === "settings" && (
         <Sheet title="Einstellungen" onClose={() => setSheet(null)}>
           <Field label="Berechnung der Übersicht">
