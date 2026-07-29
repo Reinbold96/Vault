@@ -2857,14 +2857,13 @@ export default function App() {
         .fc-undo-inner{pointer-events:auto;display:flex;align-items:center;gap:14px;max-width:492px;width:calc(100% - 32px);background:${C.ink};color:${C.canvas};border-radius:12px;padding:12px 14px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.28);}
         .fc-undo-inner .txt{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-undo-inner button{border:none;background:none;color:${C.canvas};font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;text-decoration:underline;flex-shrink:0;}
-        .fc-pie-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;pointer-events:none;text-align:center;}
-        .fc-pie-center .lb{max-width:108px;font-size:12px;font-weight:600;color:${C.muted};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-        .fc-pie-center .vl{font-size:17px;font-weight:700;color:${C.ink};line-height:1.15;}
-        .fc-pie-center .sh{max-width:112px;font-size:11px;color:${C.mutedSoft};line-height:1.2;}
-        .fc-pie-legend{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:10px;}
-        .fc-pie-tag{display:inline-flex;align-items:center;gap:6px;border:1px solid ${C.hairline};background:${C.soft};color:${C.muted};border-radius:9999px;padding:6px 11px;font-size:12px;font-weight:600;cursor:pointer;min-height:32px;}
-        .fc-pie-tag.on{border-color:${C.borderStrong};background:${C.canvas};color:${C.ink};}
-        .fc-pie-tag .dot{width:8px;height:8px;border-radius:50%;flex:none;}
+        /* Infobox in der Ringmitte. Die max-width-Werte sind so gewaehlt, dass der
+           Text auch bei langen Kategorienamen immer im freien Innenkreis bleibt
+           (Innenradius 66px -> sichere Breite ca. 100px, Mittelzeile 112px). */
+        .fc-pie-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;pointer-events:none;text-align:center;}
+        .fc-pie-center .lb{max-width:100px;font-size:12px;font-weight:600;color:${C.muted};line-height:1.2;overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+        .fc-pie-center .vl{max-width:112px;font-size:16px;font-weight:700;color:${C.ink};line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-pie-center .sh{max-width:100px;font-size:11px;color:${C.mutedSoft};line-height:1.2;overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;}
         .fc-search{position:relative;margin:14px 16px 4px;}
         .fc-search input{width:100%;background:${C.soft};border:1px solid transparent;border-radius:9999px;padding:11px 14px 11px 40px;height:44px;color:${C.ink};font-size:15px;}
         .fc-search input:focus{outline:none;border-color:${C.borderStrong};background:${C.canvas};}
@@ -3108,7 +3107,7 @@ export default function App() {
                     <PieChart>
                       <Pie
                         data={catTotals} dataKey="value" nameKey="label"
-                        innerRadius={56} outerRadius={82} paddingAngle={3} stroke="none"
+                        innerRadius={66} outerRadius={88} paddingAngle={3} stroke="none"
                         activeIndex={shownCat >= 0 ? shownCat : undefined}
                         activeShape={(p) => (
                           <g style={{ filter: "brightness(1.14) saturate(1.05)" }}>
@@ -3137,32 +3136,18 @@ export default function App() {
                       <>
                         <div className="lb" title={shownCatData.label}>{shownCatData.label}</div>
                         <div className="vl">{masked ? MASK : eurFull(shownCatData.value)}</div>
-                        <div className="sh">{catSum > 0 ? `${Math.round((shownCatData.value / catSum) * 100)}% der Ausgaben` : ""}</div>
+                        <div className="sh">{catSum > 0 ? `${Math.round((shownCatData.value / catSum) * 100)} %` : ""}</div>
                       </>
                     ) : (
                       <>
                         <div className="lb">Gesamt</div>
                         <div className="vl">{masked ? MASK : eurFull(catSum)}</div>
-                        <div className="sh">Kategorie antippen</div>
+                        <div className="sh">antippen</div>
                       </>
                     )}
                   </div>
                 </div>
 
-                {/* Legende - zuverlaessiges Ziel fuer kleine Segmente */}
-                <div className="fc-pie-legend">
-                  {catTotals.map((c, i) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      className={`fc-pie-tag ${shownCat === i ? "on" : ""}`}
-                      onClick={() => { setHoverCat(-1); setActiveCat((p) => (p === i ? -1 : i)); }}
-                    >
-                      <span className="dot" style={{ background: c.color }} />
-                      {c.label}
-                    </button>
-                  ))}
-                </div>
               </Card>
             </>
           )}
