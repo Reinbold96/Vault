@@ -633,14 +633,16 @@ function IncomeForm({ initial, onSave }) {
       <Field label="Bezeichnung">
         <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="z. B. Gehalt" />
       </Field>
-      <Field label="Art">
-        <select value={f.type} onChange={(e) => setF({ ...f, type: e.target.value })}>
-          {INCOME_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-        </select>
-      </Field>
-      <Field label={`Betrag pro Monat (${curSym()})`}>
-        <input type="number" inputMode="decimal" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} placeholder="0" />
-      </Field>
+      <div className="fc-row2">
+        <Field label="Art">
+          <select value={f.type} onChange={(e) => setF({ ...f, type: e.target.value })}>
+            {INCOME_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+        </Field>
+        <Field label={`Betrag / Monat (${curSym()})`}>
+          <input type="number" inputMode="decimal" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} placeholder="0" />
+        </Field>
+      </div>
       <Btn disabled={!f.name || !f.amount} onClick={() => onSave({ ...f, amount: Number(f.amount) })}>Speichern</Btn>
     </div>
   );
@@ -706,24 +708,24 @@ function CreditForm({ initial, onSave }) {
         <Field label={`Monatsrate (${curSym()})`}>
           <input type="number" inputMode="decimal" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })} placeholder="0" />
         </Field>
-        <Field label={`Restschuld heute (${curSym()})`}>
+        <Field label={`Restschuld (${curSym()})`}>
           <input type="number" inputMode="decimal" value={f.balance} onChange={(e) => setF({ ...f, balance: e.target.value })} placeholder="0" />
         </Field>
       </div>
       <div className="fc-row2">
-        <Field label="Zinssatz (% p. a., optional)">
+        <Field label="Zinssatz (% p. a.)">
           <input type="number" inputMode="decimal" value={f.interest} onChange={(e) => setF({ ...f, interest: e.target.value })} placeholder="z. B. 3,2" />
         </Field>
-        <Field label="Abbuchungstag (1–31, optional)">
-          <input type="number" inputMode="numeric" value={f.paymentDay || ""} onChange={(e) => setF({ ...f, paymentDay: e.target.value })} placeholder="z. B. 1" />
+        <Field label="Abbuchungstag">
+          <input type="number" inputMode="numeric" value={f.paymentDay || ""} onChange={(e) => setF({ ...f, paymentDay: e.target.value })} placeholder="1–31" />
         </Field>
       </div>
-      <Field label="Tilgungsschluss (optional)">
+      <Field label="Tilgungsschluss">
         <input type="date" value={f.endDate || ""} onChange={(e) => setF({ ...f, endDate: e.target.value })} />
       </Field>
       <div style={{ margin: "-6px 0 14px", fontSize: 13, lineHeight: 1.35, color: C.muted }}>
-        Mit Abbuchungstag reduziert die App die Restschuld automatisch jeden Monat um die Tilgung (Rate minus Zinsanteil, falls Zinssatz angegeben).
-        Mit Tilgungsschluss wird die Restlaufzeit aus deinem Vertragsdatum statt aus der Hochrechnung ermittelt.
+        Zinssatz, Abbuchungstag und Tilgungsschluss sind optional. Mit Abbuchungstag (1–31) tilgt die App automatisch jeden Monat
+        (Rate minus Zinsanteil), mit Tilgungsschluss kommt die Restlaufzeit aus deinem Vertrag statt aus der Hochrechnung.
       </div>
       <Btn disabled={!f.name || !f.rate} onClick={handleSave}>Speichern</Btn>
     </div>
@@ -803,7 +805,7 @@ function InvestForm({ initial, onSave, finnhubKey }) {
             <Field label={`Menge (${(COMMODITIES.find((x) => x.id === (f.commodity || "gold")) || {}).unit})`}>
               <input type="number" inputMode="decimal" value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} placeholder="0" />
             </Field>
-            <Field label={`Kaufkurs pro Einheit (${curSym()})`}>
+            <Field label={`Kaufkurs (${curSym()})`}>
               <input type="number" inputMode="decimal" value={f.buyPrice} onChange={(e) => setF({ ...f, buyPrice: e.target.value })} placeholder="0" />
             </Field>
           </div>
@@ -829,7 +831,7 @@ function InvestForm({ initial, onSave, finnhubKey }) {
             <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder={f.type === "immobilie" ? "z. B. Eigenheim" : "z. B. Tagesgeld"} />
           </Field>
           {f.type === "cash" && (
-            <Field label="Währung des Kontos">
+            <Field label="Währung">
               <div style={{ display: "flex", gap: 8 }}>
                 {CURRENCIES.map((c) => (
                   <Btn key={c} kind={(f.ccy || CUR) === c ? "primary" : "ghost"} onClick={() => setF({ ...f, ccy: c })} style={{ flex: 1 }}>{c}</Btn>
@@ -837,13 +839,24 @@ function InvestForm({ initial, onSave, finnhubKey }) {
               </div>
             </Field>
           )}
-          <Field label={f.type === "immobilie" ? `Aktueller Wert (${curSym()})` : `Betrag (${f.ccy || CUR})`}>
-            <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
-          </Field>
-          {f.type === "immobilie" && (
-            <Field label={`Kaufpreis (${curSym()}, optional – für Gewinn/Verlust)`}>
-              <input type="number" inputMode="decimal" value={f.buyPrice} onChange={(e) => setF({ ...f, buyPrice: e.target.value })} placeholder="0" />
+          {f.type === "immobilie" ? (
+            <div className="fc-row2">
+              <Field label={`Aktueller Wert (${curSym()})`}>
+                <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
+              </Field>
+              <Field label={`Kaufpreis (${curSym()})`}>
+                <input type="number" inputMode="decimal" value={f.buyPrice} onChange={(e) => setF({ ...f, buyPrice: e.target.value })} placeholder="0" />
+              </Field>
+            </div>
+          ) : (
+            <Field label={`Betrag (${f.ccy || CUR})`}>
+              <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
             </Field>
+          )}
+          {f.type === "immobilie" && (
+            <div style={{ fontSize: 13, color: C.muted, margin: "-2px 0 12px", lineHeight: 1.4 }}>
+              Kaufpreis ist optional – er dient nur der Gewinn-/Verlustanzeige.
+            </div>
           )}
           {f.type === "cash" && (f.ccy || CUR) !== CUR && (
             <div style={{ fontSize: 13, color: C.muted, margin: "-2px 0 12px", lineHeight: 1.4 }}>
@@ -861,7 +874,7 @@ function InvestForm({ initial, onSave, finnhubKey }) {
         </>
       ) : (
         <>
-          <Field label="Symbol / Ticker – Name wird automatisch ermittelt">
+          <Field label="Symbol / Ticker">
             <input
               value={f.symbol}
               onChange={(e) => setF({ ...f, symbol: e.target.value.toUpperCase(), name: "" })}
@@ -880,7 +893,7 @@ function InvestForm({ initial, onSave, finnhubKey }) {
           </Field>
           {lookupMsg && <div style={{ margin: "-6px 0 12px", fontSize: 13, color: C.error }}>{lookupMsg}</div>}
           <div className="fc-row2">
-            <Field label="Anzahl / Stück">
+            <Field label="Anzahl">
               <input type="number" inputMode="decimal" value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} placeholder="0" />
             </Field>
             <Field label={`Kaufkurs (${curSym()})`}>
@@ -895,7 +908,7 @@ function InvestForm({ initial, onSave, finnhubKey }) {
               <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
             </Field>
           </div>
-          <Field label="Logo-URL (optional, falls kein Logo gefunden wird)">
+          <Field label="Logo-URL (optional)">
             <input value={f.logoUrl || ""} onChange={(e) => setF({ ...f, logoUrl: e.target.value })} placeholder="https://…" />
           </Field>
           <button type="button" className="fc-check" onClick={() => setF({ ...f, inChart: f.inChart === false })}>
@@ -972,9 +985,9 @@ function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit }) {
         <div><span className="l">Monatsrate</span><span className="v">{eur(credit.rate)}</span></div>
         <div><span className="l">Zinssatz</span><span className="v">{credit.interest ? `${String(credit.interest).replace(".", ",")} %` : "–"}</span></div>
         <div>
-          <span className="l">Restlaufzeit{termMonths != null ? " (Vertrag)" : " (rechnerisch)"}</span>
+          <span className="l">Restlaufzeit</span>
           <span className="v">{monthsLabel(termMonths != null ? termMonths : plan.months)}</span>
-          {credit.endDate && <span className="l" style={{ marginTop: 1 }}>bis {fmtDay(credit.endDate)}</span>}
+          <span className="l" style={{ marginTop: 1 }}>{credit.endDate ? `bis ${fmtDay(credit.endDate)}` : "rechnerisch"}</span>
         </div>
         {isFinite(plan.interest) && plan.interest > 0 && (
           <div><span className="l">Zinsen bis Ende</span><span className="v">{eur(plan.interest)}</span></div>
@@ -2112,7 +2125,7 @@ export default function App() {
         .fc-sectiontitle .fc-sum{font-size:14px;font-weight:500;color:${C.muted};font-variant-numeric:tabular-nums;}
         .fc-kpis{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 16px 4px;}
         .fc-kpi{background:${C.soft};border-radius:14px;padding:14px 16px;}
-        .fc-kpi .l{font-size:13px;line-height:1.23;color:${C.muted};}
+        .fc-kpi .l{font-size:13px;line-height:1.23;color:${C.muted};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-kpi .v{font-size:21px;font-weight:700;line-height:1.3;margin-top:2px;font-variant-numeric:tabular-nums;color:${C.ink};}
         .fc-flowbar{display:flex;height:20px;border-radius:9999px;overflow:hidden;gap:2px;}
         .fc-flowbar div{min-width:4px;}
@@ -2128,7 +2141,6 @@ export default function App() {
         .fc-item-title{font-size:16px;font-weight:600;line-height:1.25;color:${C.ink};}
         .fc-item-sub{font-size:14px;line-height:1.43;color:${C.muted};margin-top:1px;}
         .fc-item-sub.one{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-        .fc-row2 .fc-field span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-inforow{display:flex;align-items:center;gap:8px;margin:-2px 0 0;}
         .fc-info{width:26px;height:26px;border-radius:9999px;border:none;background:${C.strong};color:${C.muted};display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex-shrink:0;}
         .fc-info:active{background:${C.borderStrong};}
@@ -2147,7 +2159,7 @@ export default function App() {
         .fc-btn.small{width:auto;min-height:0;padding:10px 20px;font-size:14px;border-radius:9999px;}
         .fc-btn:focus-visible,.fc-del:focus-visible,.fc-x:focus-visible,.fc-tab:focus-visible,.fc-gear:focus-visible{outline:2px solid ${C.ink};outline-offset:2px;}
         .fc-field{display:block;margin-bottom:14px;}
-        .fc-field span{display:block;font-size:14px;font-weight:500;line-height:1.29;color:${C.muted};margin-bottom:6px;}
+        .fc-field span{display:block;font-size:14px;font-weight:500;line-height:1.29;color:${C.muted};margin-bottom:6px;min-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-field input,.fc-field select{width:100%;background:${C.canvas};border:1px solid ${C.hairline};border-radius:8px;padding:14px 12px;height:56px;color:${C.ink};font-size:16px;line-height:1.5;appearance:none;}
         .fc-field input:focus,.fc-field select:focus{outline:none;border-color:${C.ink};box-shadow:inset 0 0 0 1px ${C.ink};}
         .fc-row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
@@ -2210,7 +2222,7 @@ export default function App() {
         .fc-check{display:flex;align-items:center;gap:10px;background:none;border:none;padding:2px 0 14px;color:${C.body};font-size:14px;cursor:pointer;font-family:inherit;text-align:left;width:100%;}
         .fc-check .box{width:20px;height:20px;border-radius:5px;border:1.5px solid ${C.borderStrong};display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;}
         .fc-check .box.on{background:${C.rausch};border-color:${C.rausch};}
-        .fc-detail-kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;background:${C.soft};border-radius:14px;padding:14px;margin-bottom:4px;}
+        .fc-detail-kpis{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;align-items:start;background:${C.soft};border-radius:14px;padding:14px;margin-bottom:4px;}
         .fc-detail-kpis .l{display:block;font-size:12.5px;color:${C.muted};}
         .fc-detail-kpis .v{display:block;font-size:16px;font-weight:700;margin-top:1px;font-variant-numeric:tabular-nums;color:${C.ink};}
         .fc-detail-sec{margin:20px 0 4px;font-size:15px;font-weight:700;color:${C.ink};}
@@ -2305,7 +2317,7 @@ export default function App() {
             <div className="fc-kpi"><div className="l">Gesamtkosten</div><div className="v">{eur(costTotal)}</div></div>
             <div className="fc-kpi">
               <div className="l" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
-                <span>{budgetMode ? SAVE_CAT.label : "Monatl. Überschuss"}</span>
+                <span>{budgetMode ? SAVE_CAT.label : "Überschuss"}</span>
                 <button className="fc-chip" onClick={() => setSheet({ type: "forecast" })} aria-label="Prognose öffnen"><TrendingUp size={12} strokeWidth={2} /> Prognose</button>
               </div>
               <div className="v" style={{ color: (budgetMode ? savingsTotal : surplus) >= 0 ? C.positive : C.error }}>{eur(budgetMode ? savingsTotal : surplus)}</div>
@@ -2415,7 +2427,7 @@ export default function App() {
             <>
               <div className="fc-kpis">
                 <div className="fc-kpi"><div className="l">Fixkosten / Monat</div><div className="v">{eur(fixTotal)}</div></div>
-                <div className="fc-kpi"><div className="l">davon Versicherungen</div><div className="v">{eur(catTotals.find((c) => c.id === "versicherung")?.value || 0)}</div></div>
+                <div className="fc-kpi"><div className="l">Versicherungen</div><div className="v">{eur(catTotals.find((c) => c.id === "versicherung")?.value || 0)}</div></div>
               </div>
               {EXPENSE_CATS.map((cat) => {
                 const items = data.expenses.filter((e) => e.category === cat.id && e.kind !== "variabel");
@@ -2479,7 +2491,7 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <div className="fc-kpi"><div className="l">Variable Kosten / Monat</div><div className="v">{eur(varTotal)}</div></div>
+                    <div className="fc-kpi"><div className="l">Variabel / Monat</div><div className="v">{eur(varTotal)}</div></div>
                     <div className="fc-kpi"><div className="l">Ø pro Tag</div><div className="v">{eur(varTotal / 30)}</div></div>
                   </>
                 )}
@@ -2763,7 +2775,7 @@ export default function App() {
               ))}
             </div>
           </Field>
-          <Field label="Währung (Anzeige & Berechnung)">
+          <Field label="Währung">
             <div style={{ display: "flex", gap: 8 }}>
               {CURRENCIES.map((c) => (
                 <Btn
@@ -2781,7 +2793,7 @@ export default function App() {
             Bestehende Beträge werden nicht umgerechnet – sie gelten in der gewählten Währung.
             Live-Kurse (Aktien &amp; Krypto) werden automatisch in die gewählte Währung umgerechnet.
           </div>
-          <Field label="App-Sperre (Face ID / Fingerabdruck, Fallback Geräte-PIN)">
+          <Field label="App-Sperre">
             {settings.lockEnabled ? (
               <Btn kind="ghost" onClick={() => { clearUnlocked(); setSettings({ ...settings, lockEnabled: false, lockCredId: "" }); }} style={{ gap: 8 }}>
                 <Lock size={15} strokeWidth={1.9} /> Sperre ist aktiv – deaktivieren
@@ -2797,14 +2809,14 @@ export default function App() {
             Hinweis: Die Daten liegen unverschlüsselt im Gerätespeicher – die Sperre schützt vor neugierigen Blicken, nicht gegen forensischen Zugriff.
             {lockMsg && <div style={{ color: C.error, marginTop: 6 }}>{lockMsg}</div>}
           </div>
-          <Field label="Finnhub API-Key (US-Aktien/ETF, kostenlos auf finnhub.io)">
+          <Field label="Finnhub API-Key">
             <input
               value={settings.finnhubKey}
               onChange={(e) => setSettings({ ...settings, finnhubKey: e.target.value.trim() })}
               placeholder="z. B. c1a2b3…"
             />
           </Field>
-          <Field label="Twelve Data API-Key (europäische/deutsche Aktien & ETFs, Öl – kostenlos auf twelvedata.com)">
+          <Field label="Twelve Data API-Key">
             <input
               value={settings.tdKey || ""}
               onChange={(e) => setSettings({ ...settings, tdKey: e.target.value.trim() })}
@@ -2812,7 +2824,8 @@ export default function App() {
             />
           </Field>
           <div style={{ fontSize: 12.5, lineHeight: 1.4, color: C.muted, margin: "-6px 0 14px" }}>
-            Edelmetalle (Gold, Silber, Platin, Palladium) laufen automatisch ohne Key. Für europäische Wertpapiere und Öl den kostenlosen Twelve-Data-Key eintragen – als Ticker funktioniert dort auch die ISIN.
+            Finnhub (kostenlos auf finnhub.io) liefert US-Aktien und -ETFs, Twelve Data (twelvedata.com) europäische Wertpapiere und Öl – dort funktioniert als Ticker auch die ISIN.
+            Krypto und Edelmetalle laufen ohne Key.
           </div>
           <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
             <Btn kind="ghost" onClick={exportData} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
