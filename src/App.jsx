@@ -1079,10 +1079,22 @@ export default function App() {
 
   /* ---------- Backup: Export / Import ---------- */
   function exportData() {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const payload = {
+      vault: 2,
+      exportedAt: new Date().toISOString(),
+      data,
+      settings: {
+        currency: settings.currency || "EUR",
+        theme: settings.theme || "system",
+        calcMode: settings.calcMode || "surplus",
+        finnhubKey: settings.finnhubKey || "",
+        tdKey: settings.tdKey || "",
+      },
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `finanz-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `vault-backup-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -1091,13 +1103,44 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(reader.result);
-        setData({ ...EMPTY, ...parsed });
+        let txt = String(reader.result || "").replace(/^\uFEFF/, "").trim();
+        const parsed = JSON.parse(txt);
+        /* Neues Format {vault,data,settings} und altes Format (Daten direkt) unterstützen */
+        const d = parsed && parsed.data ? parsed.data : parsed;
+        if (!d || typeof d !== "object" || !(d.incomes || d.expenses || d.credits || d.investments)) {
+          throw new Error("kein Backup");
+        }
+        const clean = {
+          incomes: Array.isArray(d.incomes) ? d.incomes : [],
+          expenses: Array.isArray(d.expenses) ? d.expenses : [],
+          credits: Array.isArray(d.credits) ? d.credits : [],
+          investments: Array.isArray(d.investments) ? d.investments : [],
+        };
+        setData(clean);
+        /* API-Keys & Einstellungen übernehmen – App-Sperre bleibt gerätegebunden */
+        const s = parsed && parsed.settings;
+        if (s && typeof s === "object") {
+          setSettings((prev) => ({
+            ...prev,
+            currency: CURRENCIES.includes(s.currency) ? s.currency : prev.currency,
+            theme: s.theme || prev.theme,
+            calcMode: s.calcMode || prev.calcMode,
+            finnhubKey: s.finnhubKey != null ? s.finnhubKey : prev.finnhubKey,
+            tdKey: s.tdKey != null ? s.tdKey : prev.tdKey,
+          }));
+        }
+        const n = clean.incomes.length + clean.expenses.length + clean.credits.length + clean.investments.length;
         setSheet(null);
-      } catch {
-        setPriceStatus("Import fehlgeschlagen – Datei ist kein gültiges Backup");
-        setTimeout(() => setPriceStatus(""), 6000);
+        setPriceStatus(`Backup importiert – ${n} Einträge${s ? " inkl. API-Keys" : ""}`);
+        setTimeout(() => setPriceStatus(""), 8000);
+      } catch (e) {
+        setPriceStatus("Import fehlgeschlagen – Datei ist kein gültiges Vault-Backup");
+        setTimeout(() => setPriceStatus(""), 8000);
       }
+    };
+    reader.onerror = () => {
+      setPriceStatus("Datei konnte nicht gelesen werden");
+      setTimeout(() => setPriceStatus(""), 8000);
     };
     reader.readAsText(file);
   }
@@ -1710,9 +1753,9 @@ export default function App() {
             <input
               ref={importRef}
               type="file"
-              accept="application/json"
+              accept=".json,application/json,text/plain,*/*"
               style={{ display: "none" }}
-              onChange={(e) => e.target.files && e.target.files[0] && importData(e.target.files[0])}
+              onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) importData(f); e.target.value = ""; }}
             />
           </div>
           <div style={{ fontSize: 13, lineHeight: 1.45, color: C.muted }}>
