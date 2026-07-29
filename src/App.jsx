@@ -337,6 +337,55 @@ function fillForward(series, dates) {
   return out;
 }
 
+/* ---------- Kredite: Restlaufzeit, Zinsen, automatische Tilgung ---------- */
+/* Tilgungsplan bis zur vollständigen Rückzahlung (max. 100 Jahre) */
+function payoffPlan(balance, rate, interestPct) {
+  const bal0 = Number(balance) || 0;
+  const r = Number(rate) || 0;
+  const im = (Number(interestPct) || 0) / 100 / 12;
+  if (bal0 <= 0) return { months: 0, interest: 0, ok: true };
+  if (r <= 0) return { months: Infinity, interest: Infinity, ok: false };
+  let bal = bal0, months = 0, interest = 0;
+  while (bal > 0 && months < 1200) {
+    const int = bal * im;
+    const til = r - int;
+    if (til <= 0) return { months: Infinity, interest: Infinity, ok: false };
+    interest += int;
+    bal = Math.max(0, bal - til);
+    months++;
+  }
+  return { months, interest, ok: bal <= 0 };
+}
+const monthsLabel = (m) => {
+  if (!isFinite(m)) return "läuft nie ab";
+  if (m <= 0) return "abbezahlt";
+  const y = Math.floor(m / 12), r = m % 12;
+  return `${y ? `${y} J. ` : ""}${r ? `${r} Mon.` : y ? "" : "0 Mon."}`.trim();
+};
+
+/* Fällige Monatsraten nachbuchen – rein, damit sie überall aufgerufen werden kann */
+function applyDueCredits(d) {
+  let changed = false;
+  const credits = (d.credits || []).map((c) => {
+    if (!c.paymentDay || !(Number(c.rate) > 0) || !(Number(c.balance) > 0)) return c;
+    const now = new Date();
+    const curIdx = now.getFullYear() * 12 + now.getMonth() - (now.getDate() < c.paymentDay ? 1 : 0);
+    if (typeof c.lastAppliedIdx !== "number") { changed = true; return { ...c, lastAppliedIdx: curIdx }; }
+    if (c.lastAppliedIdx >= curIdx) return c;
+    let bal = Number(c.balance);
+    let last = c.lastAppliedIdx;
+    while (last < curIdx && bal > 0) {
+      const interest = c.interest ? (bal * (Number(c.interest) / 100)) / 12 : 0;
+      const tilgung = Math.max(0, Number(c.rate) - interest);
+      bal = Math.max(0, bal - tilgung);
+      last++;
+    }
+    changed = true;
+    return { ...c, balance: Math.round(bal * 100) / 100, lastAppliedIdx: curIdx };
+  });
+  return changed ? { ...d, credits } : d;
+}
+
 /* ---------- Positionen gruppieren, FIFO, Cash ---------- */
 /* Gleiches Asset = gleicher Schlüssel; Cash und Immobilien bleiben je Eintrag eigenständig. */
 function gkeyOf(i) {
@@ -847,6 +896,104 @@ function InvestForm({ initial, onSave, finnhubKey }) {
   );
 }
 
+/* ---------- Sondertilgung buchen ---------- */
+function ExtraPaymentForm({ credit, onSave }) {
+  const [f, setF] = useState({ amt: "", date: todayIso() });
+  const amt = Number(f.amt) || 0;
+  const bal = Number(credit.balance) || 0;
+  const capped = Math.min(amt, bal);
+  const before = payoffPlan(bal, credit.rate, credit.interest);
+  const after = payoffPlan(bal - capped, credit.rate, credit.interest);
+  const savedInterest = isFinite(before.interest) && isFinite(after.interest) ? before.interest - after.interest : null;
+  const savedMonths = isFinite(before.months) && isFinite(after.months) ? before.months - after.months : null;
+
+  return (
+    <div className="fc-form">
+      <div className="fc-detail-note" style={{ marginBottom: 14 }}>
+        Restschuld heute: <b>{eurFull(bal)}</b>
+        {credit.interest ? <> · {String(credit.interest).replace(".", ",")} % p. a.</> : null}
+      </div>
+      <div className="fc-row2">
+        <Field label={`Betrag (${curSym()})`}>
+          <input type="number" inputMode="decimal" value={f.amt} onChange={(e) => setF({ ...f, amt: e.target.value })} placeholder="0" autoFocus />
+        </Field>
+        <Field label="Datum">
+          <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
+        </Field>
+      </div>
+      <button type="button" className="fc-mini" onClick={() => setF({ ...f, amt: String(bal) })}>Restschuld komplett ablösen</button>
+      {amt > bal && <div style={{ margin: "0 0 12px", fontSize: 13, color: C.error }}>Mehr als die Restschuld ({eurFull(bal)}) ist nicht möglich – es werden {eurFull(bal)} gebucht.</div>}
+      {capped > 0 && (
+        <div className="fc-detail-note" style={{ marginBottom: 14 }}>
+          Restschuld danach: <b>{eurFull(bal - capped)}</b>
+          {savedMonths != null && savedMonths > 0 && <> · Laufzeit {savedMonths} Monate kürzer ({monthsLabel(after.months)} statt {monthsLabel(before.months)})</>}
+          {savedInterest != null && savedInterest > 0 && <> · spart ca. <b style={{ color: C.positive }}>{eurFull(savedInterest)}</b> Zinsen</>}
+        </div>
+      )}
+      <Btn disabled={!capped} onClick={() => onSave({ amt: capped, date: f.date || todayIso() })}>Sondertilgung buchen</Btn>
+      <div className="fc-detail-note" style={{ marginTop: 12 }}>
+        Die Restschuld sinkt sofort – Nettovermögen und Dashboard rechnen automatisch neu.
+        Cash-Positionen werden dabei nicht angetastet, das buchst du bei Bedarf separat.
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Kredit-Detail: Kennzahlen und Sondertilgungen ---------- */
+function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit }) {
+  const [armed, setArmed] = useState(null);
+  const bal = Number(credit.balance) || 0;
+  const plan = payoffPlan(bal, credit.rate, credit.interest);
+  const extras = [...(credit.extras || [])].sort((a, b) => (b.d || "").localeCompare(a.d || ""));
+  const extraSum = extras.reduce((s, e) => s + (Number(e.amt) || 0), 0);
+  const del = (id) => { if (armed !== id) { setArmed(id); setTimeout(() => setArmed((p) => (p === id ? null : p)), 3500); return; } setArmed(null); onDeleteExtra(id); };
+
+  return (
+    <div>
+      <div className="fc-detail-kpis">
+        <div><span className="l">Restschuld</span><span className="v">{eur(bal)}</span></div>
+        <div><span className="l">Monatsrate</span><span className="v">{eur(credit.rate)}</span></div>
+        <div><span className="l">Zinssatz</span><span className="v">{credit.interest ? `${String(credit.interest).replace(".", ",")} %` : "–"}</span></div>
+        <div><span className="l">Restlaufzeit</span><span className="v">{monthsLabel(plan.months)}</span></div>
+        {isFinite(plan.interest) && plan.interest > 0 && (
+          <div><span className="l">Zinsen bis Ende</span><span className="v">{eur(plan.interest)}</span></div>
+        )}
+        {extraSum > 0 && (
+          <div><span className="l">Sondertilgungen</span><span className="v" style={{ color: C.positive }}>{eur(extraSum)}</span></div>
+        )}
+      </div>
+
+      {extras.length > 0 && (
+        <>
+          <div className="fc-detail-sec">Sondertilgungen</div>
+          {extras.map((e) => (
+            <div className="fc-detail-row" key={e.id}>
+              <div className="m">
+                <div className="t">{eurFull(e.amt)}</div>
+                <div className="s">{fmtDay(e.d)}</div>
+              </div>
+              <div className="r">
+                <button className={`fc-del ${armed === e.id ? "armed" : ""}`} onClick={() => del(e.id)} aria-label="Sondertilgung löschen">{armed === e.id ? "Löschen" : "–"}</button>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      <div style={{ display: "flex", gap: 12, marginTop: 18 }}>
+        <Btn disabled={bal <= 0} onClick={onExtra}>Sondertilgung</Btn>
+        <Btn kind="ghost" onClick={onEdit}>Kredit bearbeiten</Btn>
+      </div>
+      <div className="fc-detail-note" style={{ marginTop: 12 }}>
+        {credit.paymentDay
+          ? `Die Monatsrate wird am ${credit.paymentDay}. automatisch verbucht${credit.interest ? " – der Zinsanteil wird dabei abgezogen" : ""}.`
+          : "Ohne Abbuchungstag bleibt die Restschuld unverändert – trage ihn beim Bearbeiten nach, dann tilgt die App automatisch."}
+        {extras.length > 0 && " Beim Löschen einer Sondertilgung wird der Betrag der Restschuld wieder zugerechnet."}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Verkaufen ---------- */
 function SellForm({ group, onSave }) {
   const unit = group.type === "rohstoff" ? (group.ref.unit || "Einheiten") : "Stück";
@@ -1108,9 +1255,6 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
     HIST_TYPES.includes(g.type) && g.inChart && (g.ref.symbol || g.ref.coinId) && g.lots.some((l) => l.buyDate && l.inChart !== false)
   ), [groups]);
   const cashGroups = useMemo(() => groups.filter((g) => g.type === "cash" && g.inChart), [groups]);
-  const skipped = useMemo(() => groups.filter((g) =>
-    g.type !== "cash" && g.inChart && g.qty > 0 && !eligible.includes(g)
-  ), [groups, eligible]);
 
   const activeBms = BENCHMARKS.filter((b) => benchmarks.includes(b.id));
   const eligKey = eligible.map((g) => `${g.gkey}|${g.lots.map((l) => `${l.qty}@${l.buyDate}`).join("+")}|${g.sells.map((s) => `${s.qty}@${s.date}`).join("+")}`).join(",");
@@ -1300,11 +1444,6 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
     <Card style={{ paddingBottom: 12 }}>
       <div className="fc-chart-head">
         <div>
-          <div className="lbl">
-            Wertentwicklung
-            {(() => { const inChart = eligible.length + cashGroups.length; return inChart && inChart < groups.length ? ` · ${inChart} von ${groups.length} Positionen` : ""; })()}
-            {showPerf && cashGroups.length > 0 ? " · ohne Cash" : ""}
-          </div>
           <div className="val">{view.last ? eur(view.last.value) : "–"}</div>
           {view.first && view.last && (
             <div className="chg" style={{ color: chg >= 0 ? C.positive : C.error }}>
@@ -1324,7 +1463,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
         ))}
       </div>
 
-      <div style={{ width: "100%", height: 220, marginTop: 6 }}>
+      <div style={{ width: "100%", height: 236, marginTop: 2 }}>
         {state.loading ? (
           <div className="fc-chart-empty">Kursverlauf wird geladen …</div>
         ) : view.rows.length < 2 ? (
@@ -1360,10 +1499,9 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
         })}
       </div>
 
-      {(skipped.length > 0 || state.notes.length > 0) && (
+      {state.notes.length > 0 && (
         <div className="fc-chart-note">
-          {skipped.length > 0 && <div>Nicht im Chart: {skipped.map((s) => s.name).join(", ")} (kein Kaufdatum oder keine Historie verfügbar)</div>}
-          {state.notes.slice(0, 3).map((n, i) => <div key={i}>{n}</div>)}
+          {state.notes.slice(0, 2).map((n, i) => <div key={i}>{n}</div>)}
         </div>
       )}
     </Card>
@@ -1475,32 +1613,21 @@ export default function App() {
     return () => { document.body.style.overflow = ""; };
   }, [sheet]);
 
-  /* Auto-Tilgung: bei jedem App-Start verpasste Kredit-Abbuchungen anwenden */
+  /* Auto-Tilgung: fällige Abbuchungen beim Start, beim Zurückkehren in den
+     Vordergrund und stündlich nachbuchen – so stimmen Restschuld, Nettovermögen
+     und alle Dashboard-Zahlen auch, wenn die App tagelang offen bleibt. */
   useEffect(() => {
-    setData((d) => {
-      let changed = false;
-      const credits = d.credits.map((c) => {
-        if (!c.paymentDay || !(Number(c.rate) > 0) || !(Number(c.balance) > 0)) return c;
-        const now = new Date();
-        const curIdx = now.getFullYear() * 12 + now.getMonth() - (now.getDate() < c.paymentDay ? 1 : 0);
-        if (typeof c.lastAppliedIdx !== "number") {
-          changed = true;
-          return { ...c, lastAppliedIdx: curIdx };
-        }
-        if (c.lastAppliedIdx >= curIdx) return c;
-        let bal = Number(c.balance);
-        let last = c.lastAppliedIdx;
-        while (last < curIdx && bal > 0) {
-          const interest = c.interest ? (bal * (Number(c.interest) / 100)) / 12 : 0;
-          const tilgung = Math.max(0, Number(c.rate) - interest);
-          bal = Math.max(0, bal - tilgung);
-          last++;
-        }
-        changed = true;
-        return { ...c, balance: Math.round(bal * 100) / 100, lastAppliedIdx: curIdx };
-      });
-      return changed ? { ...d, credits } : d;
-    });
+    const run = () => setData((d) => applyDueCredits(d));
+    run();
+    const onWake = () => { if (!document.hidden) run(); };
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("focus", onWake);
+    const t = setInterval(run, 3600000);
+    return () => {
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("focus", onWake);
+      clearInterval(t);
+    };
   }, []);
 
   /* Abgeleitete Zahlen */
@@ -1512,6 +1639,10 @@ export default function App() {
   const budgetMode = settings.calcMode === "budget";
   const creditRate = useMemo(() => data.credits.reduce((s, c) => s + (Number(c.rate) || 0), 0), [data.credits]);
   const creditBalance = useMemo(() => data.credits.reduce((s, c) => s + (Number(c.balance) || 0), 0), [data.credits]);
+  const extraTotal = useMemo(
+    () => data.credits.reduce((s, c) => s + (c.extras || []).reduce((a, e) => a + (Number(e.amt) || 0), 0), 0),
+    [data.credits],
+  );
   const surplus = incomeTotal - costTotal - creditRate;
   /* Budget-Modus: was nach Fixkosten, Krediten und Sparrate für variable Ausgaben bleibt */
   const budgetTotal = incomeTotal - fixTotal - creditRate - savingsTotal;
@@ -1600,6 +1731,36 @@ export default function App() {
       });
       return { ...d, sells: d.sells.filter((x) => x.id !== id), investments };
     });
+  }
+
+  /* ---------- Sondertilgungen ---------- */
+  function bookExtra(creditId, e) {
+    const amt = Number(e.amt) || 0;
+    setData((d) => ({
+      ...d,
+      credits: d.credits.map((c) => {
+        if (c.id !== creditId) return c;
+        const bal = Math.max(0, (Number(c.balance) || 0) - amt);
+        return {
+          ...c,
+          balance: Math.round(bal * 100) / 100,
+          extras: [...(c.extras || []), { id: uid(), d: e.date || todayIso(), amt }],
+        };
+      }),
+    }));
+    setSheet({ type: "creditDetail", id: creditId });
+  }
+  function removeExtra(creditId, extraId) {
+    setData((d) => ({
+      ...d,
+      credits: d.credits.map((c) => {
+        if (c.id !== creditId) return c;
+        const ex = (c.extras || []).find((x) => x.id === extraId);
+        if (!ex) return c;
+        const bal = (Number(c.balance) || 0) + (Number(ex.amt) || 0);
+        return { ...c, balance: Math.round(bal * 100) / 100, extras: c.extras.filter((x) => x.id !== extraId) };
+      }),
+    }));
   }
 
   /* Ganze Gruppe löschen: alle Käufe und Verkäufe des Assets */
@@ -2300,6 +2461,12 @@ export default function App() {
           <div className="fc-kpis">
             <div className="fc-kpi"><div className="l">Raten / Monat</div><div className="v">{eur(creditRate)}</div></div>
             <div className="fc-kpi"><div className="l">Restschuld gesamt</div><div className="v">{eur(creditBalance)}</div></div>
+            {extraTotal > 0 && (
+              <div className="fc-kpi">
+                <div className="l">Sondertilgungen</div>
+                <div className="v" style={{ color: C.positive }}>{eur(extraTotal)}</div>
+              </div>
+            )}
           </div>
           <div style={{ height: 12 }} />
           {data.credits.length === 0
@@ -2309,9 +2476,9 @@ export default function App() {
                   lead={<Lead icon={Landmark} />}
                   armed={pendingDelete === c.id}
                   title={c.name}
-                  sub={`Restschuld ${eur(c.balance)}${c.interest ? ` · ${String(c.interest).replace(".", ",")} % p. a.` : ""}${c.paymentDay ? ` · Abbuchung am ${c.paymentDay}.` : ""}`}
+                  sub={`Restschuld ${eur(c.balance)}${c.interest ? ` · ${String(c.interest).replace(".", ",")} % p. a.` : ""}${c.paymentDay ? ` · Abbuchung am ${c.paymentDay}.` : ""}${(c.extras || []).length ? ` · ${c.extras.length} Sondertilgung${c.extras.length > 1 ? "en" : ""}` : ""}`}
                   value={`${eur(c.rate)}/M.`}
-                  onEdit={() => setSheet({ type: "credit", item: c })}
+                  onEdit={() => setSheet({ type: "creditDetail", id: c.id })}
                   onDelete={() => remove("credits", c.id)}
                 />
               ))}</Card>}
@@ -2323,7 +2490,7 @@ export default function App() {
       {tab === "invest" && (
         <>
           <div className="fc-kpis">
-            <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v">{eur(portfolioValue)}</div></div>
+            <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v">{eurM(netWorth)}</div></div>
             <div className="fc-kpi">
               <div className="l">Gewinn / Verlust</div>
               <div className="v" style={{ color: gain >= 0 ? C.positive : C.error }}>{gain >= 0 ? "+" : ""}{eur(gain)}</div>
@@ -2433,10 +2600,39 @@ export default function App() {
         </Sheet>
       )}
       {sheet?.type === "credit" && (
-        <Sheet title={sheet.item ? "Kredit bearbeiten" : "Neuer Kredit"} onClose={() => setSheet(null)}>
-          <CreditForm initial={sheet.item} onSave={(f) => save("credits", f)} />
+        <Sheet
+          title={sheet.item ? "Kredit bearbeiten" : "Neuer Kredit"}
+          onClose={() => setSheet(sheet.back ? { type: "creditDetail", id: sheet.back } : null)}
+        >
+          <CreditForm
+            initial={sheet.item}
+            onSave={(f) => { save("credits", f); if (sheet.back) setSheet({ type: "creditDetail", id: sheet.back }); }}
+          />
         </Sheet>
       )}
+      {sheet?.type === "creditDetail" && (() => {
+        const c = data.credits.find((x) => x.id === sheet.id);
+        if (!c) return null;
+        return (
+          <Sheet title={c.name} onClose={() => setSheet(null)}>
+            <CreditDetail
+              credit={c}
+              onExtra={() => setSheet({ type: "extra", id: c.id })}
+              onDeleteExtra={(exId) => removeExtra(c.id, exId)}
+              onEdit={() => setSheet({ type: "credit", item: c, back: c.id })}
+            />
+          </Sheet>
+        );
+      })()}
+      {sheet?.type === "extra" && (() => {
+        const c = data.credits.find((x) => x.id === sheet.id);
+        if (!c) return null;
+        return (
+          <Sheet title={`Sondertilgung – ${c.name}`} onClose={() => setSheet({ type: "creditDetail", id: c.id })}>
+            <ExtraPaymentForm credit={c} onSave={(e) => bookExtra(c.id, e)} />
+          </Sheet>
+        );
+      })()}
       {sheet?.type === "invest" && (
         <Sheet
           title={sheet.item ? "Kauf bearbeiten" : sheet.preset ? `${sheet.preset.name} zukaufen` : "Neue Position"}
