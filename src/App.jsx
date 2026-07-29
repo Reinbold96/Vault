@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAxis, YAxis, Sector, CartesianGrid } from "recharts";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAxis, YAxis, Sector, CartesianGrid, ReferenceLine } from "recharts";
 import {
   Shield, Home, Car, Repeat, ShoppingCart, MoreHorizontal,
   Wallet, Baby, HeartHandshake, Coins, Landmark,
@@ -7,6 +7,7 @@ import {
   Heart, Stethoscope, Users, Banknote,
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap,
   Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown, Check, Info,
+  Search, Percent, ArrowDownLeft, ArrowUpRight, Tag,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -119,6 +120,16 @@ const SAVE_CAT = { id: "sparen", label: "Sparrate", color: "#2f9e6e" };
 const ALL_CATS = [...EXPENSE_CATS, ...VARIABLE_CATS, SAVE_CAT];
 const ALL_CAT_ICONS = { ...CAT_ICONS, ...VAR_CAT_ICONS, sparen: PiggyBank };
 
+/* Farbpalette für selbst angelegte Kategorien */
+const CAT_COLORS = ["#8a5a2b", "#4a7d6d", "#d68f6f", "#5b8fb0", "#7a6ff0", "#c17d3a", "#3f7d99", "#9e6b8f", "#6b8f3f"];
+/* Kategorien einer Art: eingebaute plus eigene, mit möglichen Umbenennungen */
+function catsOf(kind, data) {
+  const base = kind === "variabel" ? VARIABLE_CATS : EXPENSE_CATS;
+  const custom = (data.cats || []).filter((c) => (c.kind || "fix") === kind);
+  const names = data.catNames || {};
+  return [...base, ...custom].map((c) => ({ ...c, label: names[c.id] || c.label, custom: !base.includes(c) }));
+}
+
 /* Bekannte Ticker: sofortige Namens-/Typ-Erkennung ohne Netz */
 const KNOWN_ASSETS = {
   AAPL: { name: "Apple", type: "aktie" }, MSFT: { name: "Microsoft", type: "aktie" },
@@ -166,6 +177,18 @@ const TICKER_DOMAINS = {
 };
 
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+/* "vor 3 Std." – Alter eines Zeitstempels in Worten */
+const agoLabel = (ts) => {
+  if (!ts) return "";
+  const min = Math.round((Date.now() - ts) / 60000);
+  if (min < 2) return "gerade";
+  if (min < 60) return `vor ${min} Min.`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `vor ${h} Std.`;
+  const d = Math.round(h / 24);
+  return d === 1 ? "gestern" : `vor ${d} Tagen`;
+};
 
 /* ---------- Währung (EUR / USD / CHF) ---------- */
 const CURRENCIES = ["EUR", "USD", "CHF"];
@@ -372,6 +395,42 @@ const monthsLabel = (m) => {
   return `${y ? `${y} J. ` : ""}${r ? `${r} Mon.` : y ? "" : "0 Mon."}`.trim();
 };
 
+/* Vollständiger Tilgungsplan. Nach Ende der Zinsbindung wird mit dem
+   angenommenen Anschlusszins weitergerechnet (Refinanzierung). */
+function amortSchedule(credit) {
+  const rate = Number(credit.rate) || 0;
+  const i1 = (Number(credit.interest) || 0) / 100 / 12;
+  const follow = credit.followInterest === "" || credit.followInterest == null ? credit.interest : credit.followInterest;
+  const i2 = (Number(follow) || 0) / 100 / 12;
+  const fixMonths = credit.fixedUntil ? monthsUntil(credit.fixedUntil) : null;
+  let bal = Number(credit.balance) || 0;
+  const rows = [];
+  let m = 0, totalInterest = 0, balAtFix = null, stalled = false;
+  const now = new Date();
+  while (bal > 0 && m < 720) {
+    const im = fixMonths == null || m < fixMonths ? i1 : i2;
+    const int = bal * im;
+    if (rate - int <= 0) { stalled = true; break; }
+    const pay = Math.min(rate, bal + int);
+    const principal = pay - int;
+    bal = Math.max(0, bal - principal);
+    totalInterest += int;
+    m++;
+    const dt = new Date(now.getFullYear(), now.getMonth() + m, 1);
+    rows.push({ m, year: dt.getFullYear(), label: `${dt.getFullYear()}`, interest: int, principal, bal });
+    if (fixMonths != null && m === fixMonths) balAtFix = bal;
+  }
+  const years = [];
+  for (const r of rows) {
+    let y = years.find((x) => x.year === r.year);
+    if (!y) { y = { year: r.year, interest: 0, principal: 0, bal: r.bal }; years.push(y); }
+    y.interest += r.interest;
+    y.principal += r.principal;
+    y.bal = r.bal;
+  }
+  return { rows, years, months: m, totalInterest, balAtFix, fixMonths, paidOff: bal <= 0, stalled };
+}
+
 /* Fällige Monatsraten nachbuchen – rein, damit sie überall aufgerufen werden kann */
 function applyDueCredits(d) {
   let changed = false;
@@ -566,6 +625,43 @@ const Btn = ({ children, onClick, kind = "primary", small, disabled, style }) =>
   </button>
 );
 
+const SearchBar = ({ value, onChange, placeholder }) => (
+  <div className="fc-search">
+    <span className="ic"><Search size={16} strokeWidth={2} /></span>
+    <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
+    {value && <button className="clr" onClick={() => onChange("")} aria-label="Suche leeren">×</button>}
+  </div>
+);
+
+/* Betragsfeld: Komma-Eingabe, Tausenderpunkte beim Verlassen des Feldes */
+function NumInput({ value, onChange, placeholder = "0", autoFocus }) {
+  const fmt = (v) => {
+    const n = Number(v);
+    if (v === "" || v == null || isNaN(n)) return "";
+    return n.toLocaleString(CUR === "CHF" ? "de-CH" : "de-DE", { maximumFractionDigits: 8 });
+  };
+  const [txt, setTxt] = useState(() => fmt(value));
+  const [live, setLive] = useState(false);
+  /* Wert von aussen übernehmen, solange nicht getippt wird */
+  useEffect(() => { if (!live) setTxt(fmt(value)); }, [value, live]);
+  const parse = (s) => {
+    const clean = String(s).replace(/[^\d.,-]/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".");
+    return clean === "" || clean === "-" ? "" : clean;
+  };
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      autoFocus={autoFocus}
+      value={txt}
+      placeholder={placeholder}
+      onFocus={() => { setLive(true); setTxt(value === "" || value == null ? "" : String(value).replace(".", ",")); }}
+      onChange={(e) => { setTxt(e.target.value); onChange(parse(e.target.value)); }}
+      onBlur={() => { setLive(false); setTxt(fmt(parse(txt))); }}
+    />
+  );
+}
+
 const Field = ({ label, children }) => (
   <label className="fc-field">
     <span>{label}</span>
@@ -652,7 +748,7 @@ function IncomeForm({ initial, onSave }) {
           </select>
         </Field>
         <Field label={`Betrag / Monat (${curSym()})`}>
-          <input type="number" inputMode="decimal" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} placeholder="0" />
+          <NumInput value={f.amount} onChange={(v) => setF({ ...f, amount: v })} placeholder="0" />
         </Field>
       </div>
       <Btn disabled={!f.name || !f.amount} onClick={() => onSave({ ...f, amount: Number(f.amount) })}>Speichern</Btn>
@@ -660,11 +756,13 @@ function IncomeForm({ initial, onSave }) {
   );
 }
 
-function ExpenseForm({ initial, kind, onSave }) {
+function ExpenseForm({ initial, kind, onSave, catList, onAddCat }) {
   const effKind = (initial && initial.kind) || kind || "fix";
   const isSave = effKind === "sparen";
-  const cats = isSave ? [SAVE_CAT] : effKind === "variabel" ? VARIABLE_CATS : EXPENSE_CATS;
+  const cats = isSave ? [SAVE_CAT] : catList || (effKind === "variabel" ? VARIABLE_CATS : EXPENSE_CATS);
   const [f, setF] = useState(initial || { name: isSave ? "Sparrate" : "", category: cats[0].id, amount: "", interval: "monatlich", kind: effKind });
+  const [newCat, setNewCat] = useState("");
+  const isFix = !isSave && effKind !== "variabel";
   return (
     <div className="fc-form">
       <Field label="Bezeichnung">
@@ -674,12 +772,26 @@ function ExpenseForm({ initial, kind, onSave }) {
         <Field label="Kategorie">
           <select value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })}>
             {cats.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            <option value="__new">＋ Neue Kategorie …</option>
           </select>
+        </Field>
+      )}
+      {f.category === "__new" && (
+        <Field label="Name der neuen Kategorie">
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={newCat} onChange={(e) => setNewCat(e.target.value)} placeholder="z. B. Haustier" autoFocus />
+            <Btn
+              small
+              disabled={!newCat.trim()}
+              onClick={() => { const id = onAddCat(newCat.trim(), effKind); setF({ ...f, category: id }); setNewCat(""); }}
+              style={{ flexShrink: 0 }}
+            >Anlegen</Btn>
+          </div>
         </Field>
       )}
       <div className="fc-row2">
         <Field label={`Betrag (${curSym()})`}>
-          <input type="number" inputMode="decimal" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} placeholder="0" />
+          <NumInput value={f.amount} onChange={(v) => setF({ ...f, amount: v })} placeholder="0" />
         </Field>
         <Field label="Intervall">
           <select value={f.interval} onChange={(e) => setF({ ...f, interval: e.target.value })}>
@@ -688,7 +800,25 @@ function ExpenseForm({ initial, kind, onSave }) {
           </select>
         </Field>
       </div>
-      <Btn disabled={!f.name || !f.amount} onClick={() => onSave({ ...f, kind: effKind, amount: Number(f.amount) })}>Speichern</Btn>
+      {isFix && (
+        <>
+          <div className="fc-row2">
+            <Field label="Vertrag bis">
+              <input type="date" value={f.until || ""} onChange={(e) => setF({ ...f, until: e.target.value })} />
+            </Field>
+            <Field label="Kündigungsfrist (Mon.)">
+              <input type="number" inputMode="numeric" value={f.notice ?? ""} onChange={(e) => setF({ ...f, notice: e.target.value })} placeholder="z. B. 3" />
+            </Field>
+          </div>
+          <div style={{ fontSize: 13, color: C.muted, margin: "-6px 0 14px", lineHeight: 1.4 }}>
+            Optional: Mit Vertragsende und Frist erinnert dich die App, sobald die Kündigung fällig wird.
+          </div>
+        </>
+      )}
+      <Btn
+        disabled={!f.name || !f.amount || f.category === "__new"}
+        onClick={() => onSave({ ...f, kind: effKind, amount: Number(f.amount), notice: f.notice === "" || f.notice == null ? "" : Number(f.notice) })}
+      >Speichern</Btn>
     </div>
   );
 }
@@ -707,6 +837,8 @@ function CreditForm({ initial, onSave }) {
       balance: Number(f.balance) || 0,
       interest: Number(f.interest) || 0,
       endDate: f.endDate || "",
+      fixedUntil: f.fixedUntil || "",
+      followInterest: f.followInterest === "" || f.followInterest == null ? "" : Number(f.followInterest),
       paymentDay,
       lastAppliedIdx,
     });
@@ -718,15 +850,15 @@ function CreditForm({ initial, onSave }) {
       </Field>
       <div className="fc-row2">
         <Field label={`Monatsrate (${curSym()})`}>
-          <input type="number" inputMode="decimal" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })} placeholder="0" />
+          <NumInput value={f.rate} onChange={(v) => setF({ ...f, rate: v })} placeholder="0" />
         </Field>
         <Field label={`Restschuld (${curSym()})`}>
-          <input type="number" inputMode="decimal" value={f.balance} onChange={(e) => setF({ ...f, balance: e.target.value })} placeholder="0" />
+          <NumInput value={f.balance} onChange={(v) => setF({ ...f, balance: v })} placeholder="0" />
         </Field>
       </div>
       <div className="fc-row2">
         <Field label="Zinssatz (% p. a.)">
-          <input type="number" inputMode="decimal" value={f.interest} onChange={(e) => setF({ ...f, interest: e.target.value })} placeholder="z. B. 3,2" />
+          <NumInput value={f.interest} onChange={(v) => setF({ ...f, interest: v })} placeholder="z. B. 3,2" />
         </Field>
         <Field label="Abbuchungstag">
           <input type="number" inputMode="numeric" value={f.paymentDay || ""} onChange={(e) => setF({ ...f, paymentDay: e.target.value })} placeholder="1–31" />
@@ -735,6 +867,14 @@ function CreditForm({ initial, onSave }) {
       <Field label="Tilgungsschluss">
         <input type="date" value={f.endDate || ""} onChange={(e) => setF({ ...f, endDate: e.target.value })} />
       </Field>
+      <div className="fc-row2">
+        <Field label="Zinsbindung bis">
+          <input type="date" value={f.fixedUntil || ""} onChange={(e) => setF({ ...f, fixedUntil: e.target.value })} />
+        </Field>
+        <Field label="Zins danach (%)">
+          <NumInput value={f.followInterest ?? ""} onChange={(v) => setF({ ...f, followInterest: v })} placeholder="z. B. 4" />
+        </Field>
+      </div>
       <div style={{ margin: "-6px 0 14px", fontSize: 13, lineHeight: 1.35, color: C.muted }}>
         Zinssatz, Abbuchungstag und Tilgungsschluss sind optional. Mit Abbuchungstag (1–31) tilgt die App automatisch jeden Monat
         (Rate minus Zinsanteil), mit Tilgungsschluss kommt die Restlaufzeit aus deinem Vertrag statt aus der Hochrechnung.
@@ -815,10 +955,10 @@ function InvestForm({ initial, onSave, finnhubKey }) {
           </Field>
           <div className="fc-row2">
             <Field label={`Menge (${(COMMODITIES.find((x) => x.id === (f.commodity || "gold")) || {}).unit})`}>
-              <input type="number" inputMode="decimal" value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} placeholder="0" />
+              <NumInput value={f.qty} onChange={(v) => setF({ ...f, qty: v })} placeholder="0" />
             </Field>
             <Field label={`Kaufkurs (${curSym()})`}>
-              <input type="number" inputMode="decimal" value={f.buyPrice} onChange={(e) => setF({ ...f, buyPrice: e.target.value })} placeholder="0" />
+              <NumInput value={f.buyPrice} onChange={(v) => setF({ ...f, buyPrice: v })} placeholder="0" />
             </Field>
           </div>
           <div className="fc-row2">
@@ -826,7 +966,7 @@ function InvestForm({ initial, onSave, finnhubKey }) {
               <input type="date" value={f.buyDate || ""} onChange={(e) => setF({ ...f, buyDate: e.target.value })} />
             </Field>
             <Field label={`Aktueller Kurs (${curSym()})`}>
-              <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
+              <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
             </Field>
           </div>
           <div style={{ fontSize: 13, color: C.muted, margin: "-2px 0 12px", lineHeight: 1.4 }}>
@@ -854,15 +994,15 @@ function InvestForm({ initial, onSave, finnhubKey }) {
           {f.type === "immobilie" ? (
             <div className="fc-row2">
               <Field label={`Aktueller Wert (${curSym()})`}>
-                <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
+                <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
               </Field>
               <Field label={`Kaufpreis (${curSym()})`}>
-                <input type="number" inputMode="decimal" value={f.buyPrice} onChange={(e) => setF({ ...f, buyPrice: e.target.value })} placeholder="0" />
+                <NumInput value={f.buyPrice} onChange={(v) => setF({ ...f, buyPrice: v })} placeholder="0" />
               </Field>
             </div>
           ) : (
             <Field label={`Betrag (${f.ccy || CUR})`}>
-              <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
+              <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
             </Field>
           )}
           {f.type === "immobilie" && (
@@ -906,10 +1046,10 @@ function InvestForm({ initial, onSave, finnhubKey }) {
           {lookupMsg && <div style={{ margin: "-6px 0 12px", fontSize: 13, color: C.error }}>{lookupMsg}</div>}
           <div className="fc-row2">
             <Field label="Anzahl">
-              <input type="number" inputMode="decimal" value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} placeholder="0" />
+              <NumInput value={f.qty} onChange={(v) => setF({ ...f, qty: v })} placeholder="0" />
             </Field>
             <Field label={`Kaufkurs (${curSym()})`}>
-              <input type="number" inputMode="decimal" value={f.buyPrice} onChange={(e) => setF({ ...f, buyPrice: e.target.value })} placeholder="0" />
+              <NumInput value={f.buyPrice} onChange={(v) => setF({ ...f, buyPrice: v })} placeholder="0" />
             </Field>
           </div>
           <div className="fc-row2">
@@ -917,7 +1057,7 @@ function InvestForm({ initial, onSave, finnhubKey }) {
               <input type="date" value={f.buyDate || ""} onChange={(e) => setF({ ...f, buyDate: e.target.value })} />
             </Field>
             <Field label={`Aktueller Kurs (${curSym()})`}>
-              <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
+              <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
             </Field>
           </div>
           <Field label="Logo-URL (optional)">
@@ -937,9 +1077,122 @@ function InvestForm({ initial, onSave, finnhubKey }) {
   );
 }
 
-/* ---------- Sondertilgung buchen ---------- */
-function ExtraPaymentForm({ credit, onSave }) {
+/* ---------- Sparziel ---------- */
+function GoalForm({ initial, onSave }) {
+  const [f, setF] = useState(initial || { name: "", target: "", saved: "", deadline: "" });
+  return (
+    <div className="fc-form">
+      <Field label="Bezeichnung">
+        <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="z. B. Notgroschen" autoFocus={!initial} />
+      </Field>
+      <div className="fc-row2">
+        <Field label={`Zielbetrag (${curSym()})`}>
+          <NumInput value={f.target} onChange={(v) => setF({ ...f, target: v })} />
+        </Field>
+        <Field label={`Schon gespart (${curSym()})`}>
+          <NumInput value={f.saved} onChange={(v) => setF({ ...f, saved: v })} />
+        </Field>
+      </div>
+      <Field label="Zieldatum">
+        <input type="date" value={f.deadline || ""} onChange={(e) => setF({ ...f, deadline: e.target.value })} />
+      </Field>
+      <Btn disabled={!f.name || !f.target} onClick={() => onSave({ ...f, target: Number(f.target) || 0, saved: Number(f.saved) || 0 })}>Speichern</Btn>
+    </div>
+  );
+}
+
+function AmountForm({ label, hint, cta, onSave, initialDate = true }) {
   const [f, setF] = useState({ amt: "", date: todayIso() });
+  const amt = Number(f.amt) || 0;
+  return (
+    <div className="fc-form">
+      {hint && <div className="fc-detail-note" style={{ marginBottom: 14 }}>{hint}</div>}
+      <div className="fc-row2">
+        <Field label={label}>
+          <NumInput value={f.amt} onChange={(v) => setF({ ...f, amt: v })} autoFocus />
+        </Field>
+        {initialDate && (
+          <Field label="Datum">
+            <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
+          </Field>
+        )}
+      </div>
+      <Btn disabled={!amt} onClick={() => onSave({ amt, date: f.date })}>{cta}</Btn>
+    </div>
+  );
+}
+
+/* ---------- Dividende / Zinsertrag ---------- */
+function DivForm({ group, onSave }) {
+  const [f, setF] = useState({ amt: "", date: todayIso(), toCash: true });
+  const amt = Number(f.amt) || 0;
+  return (
+    <div className="fc-form">
+      <div className="fc-detail-note" style={{ marginBottom: 14 }}>
+        Bestand: <b>{fmtQty(group.qty)} {group.type === "rohstoff" ? (group.ref.unit || "Einheiten") : "Stück"}</b> – erfasse den erhaltenen Betrag nach Steuern.
+      </div>
+      <div className="fc-row2">
+        <Field label={`Betrag (${curSym()})`}>
+          <NumInput value={f.amt} onChange={(v) => setF({ ...f, amt: v })} autoFocus />
+        </Field>
+        <Field label="Datum">
+          <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
+        </Field>
+      </div>
+      <button type="button" className="fc-check" onClick={() => setF({ ...f, toCash: !f.toCash })}>
+        <span className={`box ${f.toCash ? "on" : ""}`}>{f.toCash && <Check size={13} strokeWidth={3} />}</span>
+        <span>Auf das Cash-Konto buchen</span>
+      </button>
+      <Btn disabled={!amt} onClick={() => onSave(f)}>Ausschüttung buchen</Btn>
+    </div>
+  );
+}
+
+/* ---------- Cash-Konto: Bewegungen ---------- */
+function CashDetail({ inv, fxRates, onIn, onOut, onEdit, onDeleteFlow }) {
+  const ccy = inv.ccy || CUR;
+  const amt = cashAmount(inv);
+  const flows = [...(inv.flows || [])].sort((a, b) => (b.d || "").localeCompare(a.d || ""));
+  return (
+    <div>
+      <div className="fc-detail-kpis">
+        <div><span className="l">Bestand</span><span className="v">{money(amt, ccy)}</span></div>
+        {ccy !== CUR && <div><span className="l">In {CUR}</span><span className="v">{eur(amt * (fxRates[ccy] || 1))}</span></div>}
+        <div><span className="l">Währung</span><span className="v">{ccy}</span></div>
+        <div><span className="l">Buchungen</span><span className="v">{flows.length}</span></div>
+      </div>
+
+      {flows.length > 0 && (
+        <>
+          <div className="fc-detail-sec">Bewegungen</div>
+          {flows.slice(0, 12).map((f) => (
+            <div className="fc-detail-row" key={f.id}>
+              <div className="m">
+                <div className="t" style={{ color: (Number(f.amt) || 0) >= 0 ? C.positive : C.ink }}>
+                  {(Number(f.amt) || 0) >= 0 ? "+" : "−"}{money(Math.abs(Number(f.amt) || 0), ccy)}
+                </div>
+                <div className="s"><Sub parts={[fmtDay(f.d), f.label || "Verkaufserlös"]} /></div>
+              </div>
+              <div className="r">
+                <button className="fc-del" onClick={() => onDeleteFlow(f.id)} aria-label="Buchung löschen">–</button>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      <div style={{ display: "flex", gap: 12, marginTop: 18 }}>
+        <Btn onClick={onIn} style={{ gap: 6 }}><ArrowDownLeft size={16} strokeWidth={2} /> Einzahlen</Btn>
+        <Btn kind="ghost" onClick={onOut} style={{ gap: 6 }}><ArrowUpRight size={16} strokeWidth={2} /> Auszahlen</Btn>
+      </div>
+      <div style={{ marginTop: 10 }}><Btn kind="ghost" onClick={onEdit}>Konto bearbeiten</Btn></div>
+    </div>
+  );
+}
+
+/* ---------- Sondertilgung buchen ---------- */
+function ExtraPaymentForm({ credit, onSave, cashAvail = 0 }) {
+  const [f, setF] = useState({ amt: "", date: todayIso(), fromCash: cashAvail > 0 });
   const amt = Number(f.amt) || 0;
   const bal = Number(credit.balance) || 0;
   const capped = Math.min(amt, bal);
@@ -956,13 +1209,22 @@ function ExtraPaymentForm({ credit, onSave }) {
       </div>
       <div className="fc-row2">
         <Field label={`Betrag (${curSym()})`}>
-          <input type="number" inputMode="decimal" value={f.amt} onChange={(e) => setF({ ...f, amt: e.target.value })} placeholder="0" autoFocus />
+          <NumInput value={f.amt} onChange={(v) => setF({ ...f, amt: v })} placeholder="0" autoFocus />
         </Field>
         <Field label="Datum">
           <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
         </Field>
       </div>
       <button type="button" className="fc-mini" onClick={() => setF({ ...f, amt: String(bal) })}>Restschuld komplett ablösen</button>
+      {cashAvail > 0 && (
+        <button type="button" className="fc-check" onClick={() => setF({ ...f, fromCash: !f.fromCash })}>
+          <span className={`box ${f.fromCash ? "on" : ""}`}>{f.fromCash && <Check size={13} strokeWidth={3} />}</span>
+          <span>Vom Cash-Konto abbuchen ({eur(cashAvail)} verfügbar)</span>
+        </button>
+      )}
+      {f.fromCash && capped > cashAvail && (
+        <div style={{ margin: "0 0 12px", fontSize: 13, color: C.error }}>Auf dem Cash-Konto liegen nur {eurFull(cashAvail)} – der Rest wird nicht abgebucht.</div>
+      )}
       {amt > bal && <div style={{ margin: "0 0 12px", fontSize: 13, color: C.error }}>Mehr als die Restschuld ({eurFull(bal)}) ist nicht möglich – es werden {eurFull(bal)} gebucht.</div>}
       {capped > 0 && (
         <div className="fc-detail-note" style={{ marginBottom: 14 }}>
@@ -971,24 +1233,105 @@ function ExtraPaymentForm({ credit, onSave }) {
           {savedInterest != null && savedInterest > 0 && <> · spart ca. <b style={{ color: C.positive }}>{eurFull(savedInterest)}</b> Zinsen</>}
         </div>
       )}
-      <Btn disabled={!capped} onClick={() => onSave({ amt: capped, date: f.date || todayIso() })}>Sondertilgung buchen</Btn>
+      <Btn disabled={!capped} onClick={() => onSave({ amt: capped, date: f.date || todayIso(), fromCash: f.fromCash && cashAvail > 0 })}>Sondertilgung buchen</Btn>
       <div className="fc-detail-note" style={{ marginTop: 12 }}>
         Die Restschuld sinkt sofort – Nettovermögen und Dashboard rechnen automatisch neu.
-        Cash-Positionen werden dabei nicht angetastet, das buchst du bei Bedarf separat.
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Tilgungsplan ---------- */
+function AmortView({ credit }) {
+  const plan = useMemo(() => amortSchedule(credit), [credit]);
+  const fixIdx = plan.fixMonths != null && plan.fixMonths <= plan.rows.length ? plan.fixMonths : null;
+  const chart = useMemo(() => {
+    const step = Math.max(1, Math.ceil(plan.rows.length / 300));
+    return plan.rows.filter((_, i) => i % step === 0 || i === plan.rows.length - 1);
+  }, [plan.rows]);
+  const fixRow = fixIdx ? plan.rows[fixIdx - 1] : null;
+  const follow = credit.followInterest === "" || credit.followInterest == null ? credit.interest : credit.followInterest;
+
+  if (plan.stalled) {
+    return (
+      <div className="fc-detail-note">
+        Mit einer Monatsrate von {eurFull(credit.rate)} und {String(credit.interest).replace(".", ",")} % Zinsen wächst die Restschuld –
+        der Zinsanteil ist grösser als die Rate. Prüfe Rate oder Zinssatz.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="fc-detail-kpis">
+        <div><span className="l">Laufzeit</span><span className="v">{monthsLabel(plan.months)}</span></div>
+        <div><span className="l">Zinsen gesamt</span><span className="v">{eur(plan.totalInterest)}</span></div>
+        {fixRow && (
+          <>
+            <div>
+              <span className="l">Restschuld bei Bindungsende</span>
+              <span className="v">{eur(fixRow.bal)}</span>
+              <span className="l" style={{ marginTop: 1 }}>{fmtDay(credit.fixedUntil)}</span>
+            </div>
+            <div>
+              <span className="l">Anschlusszins</span>
+              <span className="v">{String(follow).replace(".", ",")} %</span>
+              <span className="l" style={{ marginTop: 1 }}>Annahme</span>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={{ width: "100%", height: 200, marginTop: 10 }}>
+        <ResponsiveContainer>
+          <LineChart data={chart} margin={{ top: 6, right: 10, bottom: 0, left: 0 }}>
+            <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={28} />
+            <YAxis width={58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline}
+              tickFormatter={(v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1).replace(".", ",")} Mio` : Math.round(v).toLocaleString(CUR === "CHF" ? "de-CH" : "de-DE"))} />
+            <Tooltip
+              formatter={(v) => [eurFull(v), "Restschuld"]}
+              labelFormatter={(l) => `Jahr ${l}`}
+              contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 12.5, boxShadow: SHADOW }}
+              labelStyle={{ color: C.muted }}
+              itemStyle={{ color: C.ink }}
+            />
+            {fixRow && <ReferenceLine x={fixRow.label} stroke={C.error} strokeDasharray="4 3" label={{ value: "Zinsbindung", position: "insideTopRight", fill: C.error, fontSize: 10.5 }} />}
+            <Line type="monotone" dataKey="bal" stroke={C.rausch} strokeWidth={2.4} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="fc-detail-sec">Pro Jahr</div>
+      <div className="fc-planhead">
+        <span>Jahr</span><span>Zinsen</span><span>Tilgung</span><span>Restschuld</span>
+      </div>
+      <div className="fc-plantable">
+        {plan.years.map((y) => (
+          <div className="fc-planrow" key={y.year}>
+            <span>{y.year}</span>
+            <span>{eur(y.interest)}</span>
+            <span>{eur(y.principal)}</span>
+            <span>{eur(y.bal)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="fc-detail-note" style={{ marginTop: 12 }}>
+        {fixRow
+          ? `Bis ${fmtDay(credit.fixedUntil)} rechnet der Plan mit ${String(credit.interest).replace(".", ",")} %, danach mit ${String(follow).replace(".", ",")} % – der Anschlusszins ist eine Annahme, keine Zusage.`
+          : "Ohne Zinsbindung rechnet der Plan durchgehend mit dem aktuellen Zinssatz. Trage die Zinsbindung ein, um die Restschuld bei Refinanzierung zu sehen."}
       </div>
     </div>
   );
 }
 
 /* ---------- Kredit-Detail: Kennzahlen und Sondertilgungen ---------- */
-function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit }) {
-  const [armed, setArmed] = useState(null);
+function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit, onPlan }) {
   const bal = Number(credit.balance) || 0;
   const plan = payoffPlan(bal, credit.rate, credit.interest);
   const termMonths = monthsUntil(credit.endDate);
   const extras = [...(credit.extras || [])].sort((a, b) => (b.d || "").localeCompare(a.d || ""));
   const extraSum = extras.reduce((s, e) => s + (Number(e.amt) || 0), 0);
-  const del = (id) => { if (armed !== id) { setArmed(id); setTimeout(() => setArmed((p) => (p === id ? null : p)), 3500); return; } setArmed(null); onDeleteExtra(id); };
 
   return (
     <div>
@@ -1019,7 +1362,7 @@ function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit }) {
                 <div className="s">{fmtDay(e.d)}</div>
               </div>
               <div className="r">
-                <button className={`fc-del ${armed === e.id ? "armed" : ""}`} onClick={() => del(e.id)} aria-label="Sondertilgung löschen">{armed === e.id ? "Löschen" : "–"}</button>
+                <button className="fc-del" onClick={() => onDeleteExtra(e.id)} aria-label="Sondertilgung löschen">–</button>
               </div>
             </div>
           ))}
@@ -1028,8 +1371,9 @@ function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit }) {
 
       <div style={{ display: "flex", gap: 12, marginTop: 18 }}>
         <Btn disabled={bal <= 0} onClick={onExtra}>Sondertilgung</Btn>
-        <Btn kind="ghost" onClick={onEdit}>Kredit bearbeiten</Btn>
+        <Btn kind="ghost" onClick={onPlan} disabled={bal <= 0 || !(Number(credit.rate) > 0)}>Tilgungsplan</Btn>
       </div>
+      <div style={{ marginTop: 10 }}><Btn kind="ghost" onClick={onEdit}>Kredit bearbeiten</Btn></div>
       <div className="fc-detail-note" style={{ marginTop: 12 }}>
         {credit.paymentDay
           ? `Die Monatsrate wird am ${credit.paymentDay}. automatisch verbucht${credit.interest ? " – der Zinsanteil wird dabei abgezogen" : ""}.`
@@ -1063,10 +1407,10 @@ function SellForm({ group, onSave }) {
       </div>
       <div className="fc-row2">
         <Field label={`Menge (${unit})`}>
-          <input type="number" inputMode="decimal" value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} placeholder="0" autoFocus />
+          <NumInput value={f.qty} onChange={(v) => setF({ ...f, qty: v })} placeholder="0" autoFocus />
         </Field>
         <Field label={`Verkaufskurs (${curSym()})`}>
-          <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
+          <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
         </Field>
       </div>
       <Field label="Verkaufsdatum">
@@ -1086,15 +1430,17 @@ function SellForm({ group, onSave }) {
 }
 
 /* ---------- Asset-Detail: alle Käufe und Verkäufe einer Position ---------- */
-function AssetDetail({ group, onAddLot, onEditLot, onDeleteLot, onSell, onDeleteSell }) {
-  const [armed, setArmed] = useState(null);
+function AssetDetail({ group, divs = [], onAddLot, onEditLot, onDeleteLot, onSell, onDeleteSell, onDiv, onDeleteDiv }) {
   const unit = group.type === "rohstoff" ? (group.ref.unit || "Einheiten") : "Stück";
   const lots = [...group.lots].sort((a, b) => (a.buyDate || "9999-12-31").localeCompare(b.buyDate || "9999-12-31"));
   const sells = [...group.sells].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   const realizedById = {};
   for (const m of group.matches || []) realizedById[m.id] = m.realized;
+  const myDivs = [...divs].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const divSum = myDivs.reduce((s, x) => s + (Number(x.amt) || 0), 0);
+  const cut = addDays(todayIso(), -365);
+  const div12 = myDivs.filter((x) => (x.date || "") >= cut).reduce((s, x) => s + (Number(x.amt) || 0), 0);
   const pct = group.cost > 0 ? (group.unreal / group.cost) * 100 : 0;
-  const del = (id, fn) => { if (armed !== id) { setArmed(id); setTimeout(() => setArmed((p) => (p === id ? null : p)), 3500); return; } setArmed(null); fn(); };
 
   return (
     <div>
@@ -1115,6 +1461,13 @@ function AssetDetail({ group, onAddLot, onEditLot, onDeleteLot, onSell, onDelete
             {group.realized >= 0 ? "+" : ""}{eur(group.realized)}
           </span>
         </div>
+        {divSum > 0 && (
+          <div>
+            <span className="l">Ausschüttungen</span>
+            <span className="v" style={{ color: C.positive }}>+{eur(divSum)}</span>
+            <span className="l" style={{ marginTop: 1 }}>{div12 > 0 ? `${eur(div12)} letzte 12 Mon.` : "gesamt"}</span>
+          </div>
+        )}
       </div>
 
       <div className="fc-detail-sec">Käufe</div>
@@ -1126,7 +1479,7 @@ function AssetDetail({ group, onAddLot, onEditLot, onDeleteLot, onSell, onDelete
           </div>
           <div className="r">
             <span className="a">{eur((Number(l.qty) || 0) * (Number(l.buyPrice) || 0))}</span>
-            <button className={`fc-del ${armed === l.id ? "armed" : ""}`} onClick={() => del(l.id, () => onDeleteLot(l.id))} aria-label="Kauf löschen">{armed === l.id ? "Löschen" : "–"}</button>
+            <button className="fc-del" onClick={() => onDeleteLot(l.id)} aria-label="Kauf löschen">–</button>
           </div>
         </div>
       ))}
@@ -1151,7 +1504,24 @@ function AssetDetail({ group, onAddLot, onEditLot, onDeleteLot, onSell, onDelete
               </div>
               <div className="r">
                 <span className="a">{eur((Number(s.qty) || 0) * (Number(s.price) || 0))}</span>
-                <button className={`fc-del ${armed === s.id ? "armed" : ""}`} onClick={() => del(s.id, () => onDeleteSell(s.id))} aria-label="Verkauf löschen">{armed === s.id ? "Löschen" : "–"}</button>
+                <button className="fc-del" onClick={() => onDeleteSell(s.id)} aria-label="Verkauf löschen">–</button>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {myDivs.length > 0 && (
+        <>
+          <div className="fc-detail-sec">Ausschüttungen</div>
+          {myDivs.slice(0, 10).map((x) => (
+            <div className="fc-detail-row" key={x.id}>
+              <div className="m">
+                <div className="t" style={{ color: C.positive }}>+{eurFull(x.amt)}</div>
+                <div className="s">{fmtDay(x.date)}</div>
+              </div>
+              <div className="r">
+                <button className="fc-del" onClick={() => onDeleteDiv(x.id)} aria-label="Ausschüttung löschen">–</button>
               </div>
             </div>
           ))}
@@ -1162,8 +1532,11 @@ function AssetDetail({ group, onAddLot, onEditLot, onDeleteLot, onSell, onDelete
         <Btn onClick={onAddLot}>Zukauf</Btn>
         <Btn kind="ghost" disabled={group.qty <= 0} onClick={onSell}>Verkaufen</Btn>
       </div>
+      <div style={{ marginTop: 10 }}>
+        <Btn kind="ghost" onClick={onDiv} style={{ gap: 6 }}><Percent size={15} strokeWidth={2} /> Dividende / Zinsen</Btn>
+      </div>
       <div className="fc-detail-note" style={{ marginTop: 12 }}>
-        Verkäufe werden nach FIFO abgerechnet: die ältesten Käufe gehen zuerst. Der Erlös landet auf deinem Cash-Konto.
+        Verkäufe werden nach FIFO abgerechnet: die ältesten Käufe gehen zuerst. Erlöse und Ausschüttungen landen auf deinem Cash-Konto.
       </div>
     </div>
   );
@@ -1243,7 +1616,7 @@ function ForecastView({ surplus, startValue }) {
           <input type="number" inputMode="decimal" value={ratePct} onChange={(e) => setRatePct(e.target.value)} placeholder="5" />
         </Field>
         <Field label={`Monatlich sparen (${curSym()})`}>
-          <input type="number" inputMode="decimal" value={contrib} onChange={(e) => setContrib(e.target.value)} placeholder="0" />
+          <NumInput value={contrib} onChange={setContrib} />
         </Field>
       </div>
       <div className="fc-inforow">
@@ -1311,6 +1684,7 @@ const histKeyOf = (g, cur) => g.type === "krypto"
 function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBenchmark }) {
   const [range, setRange] = useState("6M");
   const [mode, setMode] = useState("value");
+  const [hover, setHover] = useState(null);
   const [state, setState] = useState({ loading: false, rows: [], notes: [], err: "" });
 
   /* Gruppen mit Kurshistorie, Kaufdatum und Chart-Häkchen */
@@ -1500,6 +1874,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
   }, [view.first, view.last, eligible]);
   const chg = view.first && view.last ? (view.last.gain - view.first.gain) + realizedWin : 0;
   const chgPct = view.first && view.last && view.first.twr ? (view.last.twr / view.first.twr - 1) * 100 : 0;
+  const hoverRow = hover != null && view.rows[hover] ? view.rows[hover] : null;
   const fmtDate = (d) => { const x = new Date(d); return `${String(x.getDate()).padStart(2, "0")}.${String(x.getMonth() + 1).padStart(2, "0")}.${String(x.getFullYear()).slice(2)}`; };
   /* Achsenbeschriftung so genau, dass keine zwei Ticks gleich aussehen:
      die Genauigkeit richtet sich nach der Spannweite der Werte im Zeitraum. */
@@ -1522,12 +1897,17 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
     <Card style={{ paddingBottom: 12 }}>
       <div className="fc-chart-head">
         <div>
-          <div className="val">{view.last ? eur(view.last.value) : "–"}</div>
-          {view.first && view.last && (
+          <div className="val">{hoverRow ? eur(hoverRow.value) : view.last ? eur(view.last.value) : "–"}</div>
+          {hoverRow ? (
+            <div className="chg" style={{ color: C.muted }}>
+              {fmtDate(hoverRow.d)}
+              {showPerf && hoverRow.perf != null && <> · {hoverRow.perf >= 0 ? "+" : ""}{hoverRow.perf.toFixed(1).replace(".", ",")} %</>}
+            </div>
+          ) : view.first && view.last ? (
             <div className="chg" style={{ color: chg >= 0 ? C.positive : C.error }}>
               {chg >= 0 ? "+" : ""}{eur(chg)} · {chg >= 0 ? "+" : ""}{chgPct.toFixed(1).replace(".", ",")} %
             </div>
-          )}
+          ) : null}
         </div>
         <div className="fc-chart-modes">
           <button className={!showPerf ? "active" : ""} onClick={() => setMode("value")} disabled={activeBms.length > 0}>Wert</button>
@@ -1548,7 +1928,14 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
           <div className="fc-chart-empty">{state.err || "Noch keine Daten – Kaufdatum bei den Positionen eintragen."}</div>
         ) : (
           <ResponsiveContainer>
-            <LineChart data={view.rows} margin={{ top: 6, right: 10, bottom: 0, left: 0 }}>
+            <LineChart
+              data={view.rows}
+              margin={{ top: 6, right: 10, bottom: 0, left: 0 }}
+              onMouseMove={(s) => setHover(s && s.activeTooltipIndex != null ? s.activeTooltipIndex : null)}
+              onTouchMove={(s) => setHover(s && s.activeTooltipIndex != null ? s.activeTooltipIndex : null)}
+              onMouseLeave={() => setHover(null)}
+              onTouchEnd={() => setHover(null)}
+            >
               <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
               <XAxis dataKey="d" tickFormatter={fmtDate} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={38} />
               <YAxis domain={["auto", "auto"]} allowDecimals={false} tickFormatter={(v) => (showPerf ? `${Math.round(v)} %` : axisVal(v))} width={showPerf ? 46 : 58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} />
@@ -1558,6 +1945,9 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
                 contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 12.5, boxShadow: SHADOW }}
                 labelStyle={{ color: C.muted }}
                 itemStyle={{ color: C.ink }}
+                cursor={{ stroke: C.borderStrong, strokeWidth: 1, strokeDasharray: "3 3" }}
+                /* Bei nur einer Linie steht der Wert schon im Kopf */
+                content={activeBms.length ? undefined : () => null}
               />
               <Line type="monotone" dataKey={showPerf ? "perf" : "value"} name="Portfolio" stroke={C.rausch} strokeWidth={2.4} dot={false} connectNulls />
               {showPerf && activeBms.map((b) => (
@@ -1608,7 +1998,8 @@ export default function App() {
     } catch { return false; }
   });
   const [lockMsg, setLockMsg] = useState("");
-  const [pendingDelete, setPendingDelete] = useState(null);
+  const [undo, setUndo] = useState(null);
+  const [search, setSearch] = useState("");
   const [fxRates, setFxRates] = useState({ EUR: 1, USD: 1, CHF: 1 });
   const importRef = useRef(null);
 
@@ -1728,12 +2119,33 @@ export default function App() {
   const budgetTotal = incomeTotal - fixTotal - creditRate - savingsTotal;
   const budgetFree = budgetTotal - varTotal;
 
+  /* Kategorien: eingebaute + eigene, inklusive Umbenennungen */
+  const fixCats = useMemo(() => catsOf("fix", data), [data.cats, data.catNames]);
+  const varCats = useMemo(() => catsOf("variabel", data), [data.cats, data.catNames]);
+  const allCats = useMemo(() => [...fixCats, ...varCats, SAVE_CAT], [fixCats, varCats]);
+  const catLabel = (id) => (allCats.find((c) => c.id === id) || {}).label || "";
+
   const catTotals = useMemo(() =>
-    ALL_CATS.map((c) => ({
+    allCats.map((c) => ({
       ...c,
       value: data.expenses.filter((e) => e.category === c.id && e.kind !== "sparen").reduce((s, e) => s + monthly(e), 0),
     })).filter((c) => c.value > 0),
-  [data.expenses]);
+  [data.expenses, allCats]);
+
+  /* Verträge, deren Kündigung in den nächsten 60 Tagen fällig wird */
+  const dueContracts = useMemo(() => {
+    const today = todayIso();
+    return data.expenses
+      .filter((e) => e.until && e.kind !== "variabel")
+      .map((e) => {
+        const notice = Number(e.notice) || 0;
+        const end = new Date(e.until);
+        const deadline = isoDay(new Date(end.getFullYear(), end.getMonth() - notice, end.getDate()));
+        return { ...e, deadline, days: daysBetween(today, deadline) };
+      })
+      .filter((e) => e.days <= 60)
+      .sort((a, b) => a.days - b.days);
+  }, [data.expenses]);
 
   /* Positionen zu Gruppen zusammenfassen (mehrere Käufe eines Assets = eine Zeile) */
   const groups = useMemo(
@@ -1745,10 +2157,44 @@ export default function App() {
   const realizedTotal = useMemo(() => groups.reduce((s, g) => s + g.realized, 0), [groups]);
   const gain = portfolioValue - portfolioCost + realizedTotal;
   const netWorth = portfolioValue - creditBalance;
+  /* Cash in Anzeigewährung – Basis für Sondertilgung aus Cash */
+  const cashInCur = useMemo(() => {
+    const c = data.investments.find((x) => x.type === "cash" && (x.ccy || CUR) === CUR);
+    return c ? cashAmount(c) : 0;
+  }, [data.investments, settings.currency]);
+  const divTotal12 = useMemo(() => {
+    const cut = addDays(todayIso(), -365);
+    return (data.divs || []).filter((x) => (x.date || "") >= cut).reduce((s, x) => s + (Number(x.amt) || 0), 0);
+  }, [data.divs]);
   const lastPriceUpdate = useMemo(() => {
     const ts = data.investments.map((i) => i.priceUpdated || 0);
     return ts.length ? Math.max(...ts) : 0;
   }, [data.investments]);
+
+  /* ---------- Monats-Snapshots: Basis für Delta und Verlauf ---------- */
+  const monthKey = new Date().toISOString().slice(0, 7);
+  useEffect(() => {
+    if (!data.incomes.length && !data.expenses.length && !data.credits.length && !data.investments.length) return;
+    setData((d) => {
+      const snaps = d.snapshots || [];
+      const cur = snaps.find((s) => s.m === monthKey);
+      const next = { m: monthKey, net: Math.round(netWorth), pf: Math.round(portfolioValue), debt: Math.round(creditBalance) };
+      if (cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt) return d;
+      return { ...d, snapshots: [...snaps.filter((s) => s.m !== monthKey), next].sort((a, b) => a.m.localeCompare(b.m)).slice(-120) };
+    });
+  }, [netWorth, portfolioValue, creditBalance, monthKey]);
+
+  const snapshots = data.snapshots || [];
+  /* Veränderung gegenüber dem letzten abgeschlossenen Monat */
+  const lastMonthSnap = useMemo(() => {
+    const prev = snapshots.filter((s) => s.m < monthKey);
+    return prev.length ? prev[prev.length - 1] : null;
+  }, [snapshots, monthKey]);
+  const netDelta = lastMonthSnap ? netWorth - lastMonthSnap.net : null;
+  const monthName = (m) => {
+    const [y, mm] = m.split("-");
+    return `${["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."][Number(mm) - 1]} ${y.slice(2)}`;
+  };
 
   /* CRUD */
   const save = (key, item) => {
@@ -1759,14 +2205,27 @@ export default function App() {
     });
     setSheet(null);
   };
+  /* Löschen ohne Rückfrage, dafür 8 Sekunden Rückgängig-Leiste */
+  const undoTimer = useRef(null);
+  function withUndo(label, mutate) {
+    setData((d) => {
+      const before = d;
+      setUndo({ label, before });
+      if (undoTimer.current) clearTimeout(undoTimer.current);
+      undoTimer.current = setTimeout(() => setUndo(null), 8000);
+      return mutate(d);
+    });
+  }
+  function doUndo() {
+    if (!undo) return;
+    const before = undo.before;
+    setUndo(null);
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    setData(before);
+  }
   const remove = (key, id) => {
-    if (pendingDelete !== id) {
-      setPendingDelete(id);
-      setTimeout(() => setPendingDelete((p) => (p === id ? null : p)), 3500);
-      return;
-    }
-    setData((d) => ({ ...d, [key]: d[key].filter((x) => x.id !== id) }));
-    setPendingDelete(null);
+    const item = (data[key] || []).find((x) => x.id === id);
+    withUndo(`${item && item.name ? item.name : "Eintrag"} gelöscht`, (d) => ({ ...d, [key]: d[key].filter((x) => x.id !== id) }));
   };
 
   /* ---------- Verkäufe (FIFO) und Cash ---------- */
@@ -1800,7 +2259,7 @@ export default function App() {
 
   /* Verkauf zurücknehmen: Erlös wieder aus dem Cash-Konto herausrechnen */
   function removeSell(id) {
-    setData((d) => {
+    withUndo("Verkauf gelöscht", (d) => {
       const s = (d.sells || []).find((x) => x.id === id);
       if (!s) return d;
       const amt = (Number(s.qty) || 0) * (Number(s.price) || 0);
@@ -1813,50 +2272,180 @@ export default function App() {
     });
   }
 
+  /* ---------- Kategorien ---------- */
+  function addCat(label, kind) {
+    const id = `c_${uid()}`;
+    setData((d) => {
+      const used = (d.cats || []).length;
+      return { ...d, cats: [...(d.cats || []), { id, label, kind: kind === "variabel" ? "variabel" : "fix", color: CAT_COLORS[used % CAT_COLORS.length] }] };
+    });
+    return id;
+  }
+  function renameCat(id, label) {
+    setData((d) => ({ ...d, catNames: { ...(d.catNames || {}), [id]: label } }));
+  }
+  function removeCat(id) {
+    withUndo("Kategorie gelöscht", (d) => ({
+      ...d,
+      cats: (d.cats || []).filter((c) => c.id !== id),
+      catNames: Object.fromEntries(Object.entries(d.catNames || {}).filter(([k]) => k !== id)),
+    }));
+  }
+
+  /* ---------- Sparziele ---------- */
+  function saveGoal(g) {
+    setData((d) => {
+      const list = d.goals || [];
+      const exists = g.id && list.some((x) => x.id === g.id);
+      return { ...d, goals: exists ? list.map((x) => (x.id === g.id ? g : x)) : [...list, { ...g, id: uid() }] };
+    });
+    setSheet(null);
+  }
+  function addToGoal(id, amt) {
+    setData((d) => ({
+      ...d,
+      goals: (d.goals || []).map((g) => (g.id === id ? { ...g, saved: Math.max(0, (Number(g.saved) || 0) + amt) } : g)),
+    }));
+  }
+  function removeGoal(id) {
+    const g = (data.goals || []).find((x) => x.id === id);
+    withUndo(`${g ? g.name : "Ziel"} gelöscht`, (d) => ({ ...d, goals: (d.goals || []).filter((x) => x.id !== id) }));
+  }
+
+  /* ---------- Dividenden / Zinserträge ---------- */
+  function bookDiv(gkey, v) {
+    const cur = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
+    const id = uid();
+    const date = v.date || todayIso();
+    const amt = Number(v.amt) || 0;
+    setData((d) => {
+      const divs = [...(d.divs || []), { id, gkey, amt, date }];
+      let investments = d.investments;
+      if (v.toCash) {
+        const flow = { id, d: date, amt };
+        const idx = investments.findIndex((x) => x.type === "cash" && (x.ccy || cur) === cur);
+        if (idx >= 0) {
+          investments = investments.map((x, k) => {
+            if (k !== idx) return x;
+            const n = (Number(x.price) || 0) + amt;
+            return { ...x, price: n, buyPrice: n, flows: [...(x.flows || []), flow] };
+          });
+        } else {
+          investments = [...investments, { id: uid(), type: "cash", name: `Cash ${cur}`, ccy: cur, symbol: "", qty: 1, price: amt, buyPrice: amt, inChart: true, flows: [flow] }];
+        }
+      }
+      return { ...d, divs, investments };
+    });
+    setSheet({ type: "group", gkey });
+  }
+  function removeDiv(id) {
+    withUndo("Ausschüttung gelöscht", (d) => ({
+      ...d,
+      divs: (d.divs || []).filter((x) => x.id !== id),
+      investments: d.investments.map((x) => {
+        if (x.type !== "cash" || !(x.flows || []).some((f) => f.id === id)) return x;
+        const back = (x.flows.find((f) => f.id === id) || {}).amt || 0;
+        const rest = (Number(x.price) || 0) - back;
+        return { ...x, price: rest, buyPrice: rest, flows: x.flows.filter((f) => f.id !== id) };
+      }),
+    }));
+  }
+
+  /* ---------- Cash-Bewegungen ---------- */
+  function bookCashFlow(cashId, amt, date, label) {
+    setData((d) => ({
+      ...d,
+      investments: d.investments.map((x) => {
+        if (x.id !== cashId) return x;
+        const n = Math.max(0, (Number(x.price) || 0) + amt);
+        return { ...x, price: n, buyPrice: n, flows: [...(x.flows || []), { id: uid(), d: date || todayIso(), amt, label }] };
+      }),
+    }));
+    setSheet({ type: "cash", id: cashId });
+  }
+  function removeCashFlow(cashId, flowId) {
+    withUndo("Buchung gelöscht", (d) => ({
+      ...d,
+      investments: d.investments.map((x) => {
+        if (x.id !== cashId) return x;
+        const fl = (x.flows || []).find((f) => f.id === flowId);
+        if (!fl) return x;
+        const n = Math.max(0, (Number(x.price) || 0) - (Number(fl.amt) || 0));
+        return { ...x, price: n, buyPrice: n, flows: x.flows.filter((f) => f.id !== flowId) };
+      }),
+    }));
+  }
+
   /* ---------- Sondertilgungen ---------- */
   function bookExtra(creditId, e) {
     const amt = Number(e.amt) || 0;
-    setData((d) => ({
-      ...d,
-      credits: d.credits.map((c) => {
+    const exId = uid();
+    const date = e.date || todayIso();
+    const cur = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
+    setData((d) => {
+      const credits = d.credits.map((c) => {
         if (c.id !== creditId) return c;
         const bal = Math.max(0, (Number(c.balance) || 0) - amt);
-        return {
-          ...c,
-          balance: Math.round(bal * 100) / 100,
-          extras: [...(c.extras || []), { id: uid(), d: e.date || todayIso(), amt }],
-        };
-      }),
-    }));
+        return { ...c, balance: Math.round(bal * 100) / 100, extras: [...(c.extras || []), { id: exId, d: date, amt, fromCash: !!e.fromCash }] };
+      });
+      let investments = d.investments;
+      if (e.fromCash) {
+        const idx = investments.findIndex((x) => x.type === "cash" && (x.ccy || cur) === cur);
+        if (idx >= 0) {
+          investments = investments.map((x, k) => {
+            if (k !== idx) return x;
+            const n = Math.max(0, (Number(x.price) || 0) - amt);
+            return { ...x, price: n, buyPrice: n, flows: [...(x.flows || []), { id: exId, d: date, amt: -amt, label: "Sondertilgung" }] };
+          });
+        }
+      }
+      return { ...d, credits, investments };
+    });
     setSheet({ type: "creditDetail", id: creditId });
   }
   function removeExtra(creditId, extraId) {
-    setData((d) => ({
+    withUndo("Sondertilgung gelöscht", (d) => ({
       ...d,
       credits: d.credits.map((c) => {
         if (c.id !== creditId) return c;
         const ex = (c.extras || []).find((x) => x.id === extraId);
         if (!ex) return c;
         const bal = (Number(c.balance) || 0) + (Number(ex.amt) || 0);
+        /* Falls die Tilgung vom Cash-Konto kam, den Betrag dort zurückbuchen */
         return { ...c, balance: Math.round(bal * 100) / 100, extras: c.extras.filter((x) => x.id !== extraId) };
+      }),
+      investments: d.investments.map((x) => {
+        if (x.type !== "cash" || !(x.flows || []).some((f) => f.id === extraId)) return x;
+        const back = (x.flows.find((f) => f.id === extraId) || {}).amt || 0;
+        const rest = (Number(x.price) || 0) - back;
+        return { ...x, price: rest, buyPrice: rest, flows: x.flows.filter((f) => f.id !== extraId) };
       }),
     }));
   }
 
   /* Ganze Gruppe löschen: alle Käufe und Verkäufe des Assets */
   function removeGroup(gkey) {
-    if (pendingDelete !== gkey) {
-      setPendingDelete(gkey);
-      setTimeout(() => setPendingDelete((p) => (p === gkey ? null : p)), 3500);
-      return;
-    }
-    setData((d) => ({
+    const g = groups.find((x) => x.gkey === gkey);
+    withUndo(`${g ? g.name : "Position"} gelöscht`, (d) => ({
       ...d,
       investments: d.investments.filter((x) => gkeyOf(x) !== gkey),
       sells: (d.sells || []).filter((x) => x.gkey !== gkey),
+      divs: (d.divs || []).filter((x) => x.gkey !== gkey),
     }));
-    setPendingDelete(null);
   }
+
+  /* Kurse beim Öffnen des Invest-Reiters automatisch nachladen (max. alle 6 Stunden) */
+  const autoFetched = useRef(false);
+  useEffect(() => {
+    if (tab !== "invest" || autoFetched.current) return;
+    const stale = !lastPriceUpdate || Date.now() - lastPriceUpdate > 6 * 3600000;
+    const priceable = data.investments.some((i) => !VALUE_TYPES.includes(i.type));
+    if (stale && priceable) { autoFetched.current = true; refreshPrices(); }
+  }, [tab, lastPriceUpdate, data.investments]);
+
+  /* Suchfilter für Listen */
+  const q = search.trim().toLowerCase();
+  const matches = (...fields) => !q || fields.some((f) => String(f || "").toLowerCase().includes(q));
 
   /* ---------- Live-Kurse: CoinGecko (Krypto) + Finnhub (Aktien/ETF) ---------- */
   async function refreshPrices() {
@@ -2036,7 +2625,7 @@ export default function App() {
   /* ---------- Backup: Export / Import ---------- */
   function exportData() {
     const payload = {
-      vault: 2,
+      vault: 3,
       exportedAt: new Date().toISOString(),
       data,
       settings: {
@@ -2072,6 +2661,11 @@ export default function App() {
           credits: Array.isArray(d.credits) ? d.credits : [],
           investments: Array.isArray(d.investments) ? d.investments : [],
           sells: Array.isArray(d.sells) ? d.sells : [],
+          divs: Array.isArray(d.divs) ? d.divs : [],
+          goals: Array.isArray(d.goals) ? d.goals : [],
+          cats: Array.isArray(d.cats) ? d.cats : [],
+          catNames: d.catNames && typeof d.catNames === "object" ? d.catNames : {},
+          snapshots: Array.isArray(d.snapshots) ? d.snapshots : [],
         };
         setData(clean);
         /* API-Keys & Einstellungen übernehmen – App-Sperre bleibt gerätegebunden */
@@ -2105,7 +2699,7 @@ export default function App() {
   const monthLabel = new Date().toLocaleDateString("de-DE", { month: "long", year: "numeric" });
   const eurM = (v) => (masked ? MASK : eur(v));
 
-  const ListItem = ({ lead, title, sub, value, valueColor, tag, armed, onEdit, onDelete, note }) => (
+  const ListItem = ({ lead, title, sub, value, valueColor, tag, onEdit, onDelete, note }) => (
     <div className="fc-item">
       {lead}
       <div className="fc-item-main" onClick={onEdit}>
@@ -2115,7 +2709,7 @@ export default function App() {
       </div>
       <div className="fc-item-right">
         <div className="fc-item-value" style={{ color: valueColor || C.ink }}>{value}</div>
-        <button className={`fc-del ${armed ? "armed" : ""}`} onClick={onDelete} aria-label="Löschen">{armed ? "Löschen" : "–"}</button>
+        <button className="fc-del" onClick={onDelete} aria-label="Löschen">–</button>
       </div>
     </div>
   );
@@ -2164,6 +2758,38 @@ export default function App() {
         .fc-item-right{display:flex;align-items:center;gap:12px;}
         .fc-item-value{font-size:16px;font-weight:600;line-height:1.25;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;}
         .fc-del{width:32px;height:32px;border-radius:9999px;border:none;background:${C.strong};color:${C.ink};font-size:16px;line-height:1;cursor:pointer;flex-shrink:0;}
+        .fc-undo{position:fixed;left:0;right:0;bottom:calc(66px + env(safe-area-inset-bottom));display:flex;justify-content:center;z-index:45;pointer-events:none;}
+        .fc-undo-inner{pointer-events:auto;display:flex;align-items:center;gap:14px;max-width:492px;width:calc(100% - 32px);background:${C.ink};color:${C.canvas};border-radius:12px;padding:12px 14px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.28);}
+        .fc-undo-inner .txt{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-undo-inner button{border:none;background:none;color:${C.canvas};font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;text-decoration:underline;flex-shrink:0;}
+        .fc-search{position:relative;margin:14px 16px 4px;}
+        .fc-search input{width:100%;background:${C.soft};border:1px solid transparent;border-radius:9999px;padding:11px 14px 11px 40px;height:44px;color:${C.ink};font-size:15px;}
+        .fc-search input:focus{outline:none;border-color:${C.borderStrong};background:${C.canvas};}
+        .fc-search .ic{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:${C.mutedSoft};display:flex;}
+        .fc-search .clr{position:absolute;right:12px;top:50%;transform:translateY(-50%);border:none;background:none;color:${C.mutedSoft};cursor:pointer;font-size:16px;padding:4px;}
+        .fc-form > .fc-btn.primary{position:sticky;bottom:-28px;z-index:3;box-shadow:0 -14px 18px 8px ${C.canvas};}
+        .fc-goal{padding:12px 0;border-bottom:1px solid ${C.hairlineSoft};}
+        .fc-goal:last-of-type{border-bottom:none;}
+        .fc-goal .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
+        .fc-goal .nm{font-size:15px;font-weight:600;color:${C.ink};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-goal .am{font-size:14px;font-variant-numeric:tabular-nums;color:${C.muted};white-space:nowrap;}
+        .fc-goal .track{height:8px;border-radius:9999px;background:${C.strong};overflow:hidden;margin:8px 0 5px;}
+        .fc-goal .track span{display:block;height:100%;border-radius:9999px;background:${C.positive};}
+        .fc-goal .meta{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;color:${C.mutedSoft};}
+        .fc-goal .acts{display:flex;gap:8px;margin-top:8px;}
+        .fc-warnrow{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid ${C.hairlineSoft};font-size:14px;}
+        .fc-warnrow:last-child{border-bottom:none;}
+        .fc-warnrow .nm{flex:1;color:${C.ink};font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-warnrow .dt{color:${C.error};font-weight:600;white-space:nowrap;}
+        .fc-tag.warn{border-color:${C.error};color:${C.error};}
+        .fc-inline{width:100%;background:none;border:none;border-bottom:1px dashed ${C.hairline};color:${C.ink};font-size:15px;font-weight:600;padding:2px 0;font-family:inherit;}
+        .fc-inline:focus{outline:none;border-bottom-color:${C.ink};}
+        .fc-planhead,.fc-planrow{display:grid;grid-template-columns:52px 1fr 1fr 1fr;gap:6px;font-variant-numeric:tabular-nums;}
+        .fc-planhead{font-size:12px;color:${C.mutedSoft};padding:4px 0 6px;border-bottom:1px solid ${C.hairline};}
+        .fc-planhead span+span,.fc-planrow span+span{text-align:right;}
+        .fc-plantable{max-height:260px;overflow-y:auto;}
+        .fc-planrow{font-size:13.5px;color:${C.body};padding:8px 0;border-bottom:1px solid ${C.hairlineSoft};}
+        .fc-planrow span:first-child{font-weight:600;color:${C.ink};}
         .fc-del.armed{width:auto;padding:0 14px;background:${C.error};color:#ffffff;font-size:13px;font-weight:600;}
         .fc-tag{display:inline-block;margin-left:8px;padding:2px 6px;border-radius:9999px;border:1px solid ${C.hairline};font-size:8px;font-weight:700;letter-spacing:.32px;text-transform:uppercase;color:${C.ink};vertical-align:2px;}
         .fc-btn{border:none;border-radius:8px;padding:12px 16px;min-height:48px;font-size:16px;font-weight:500;line-height:1.25;cursor:pointer;width:100%;display:flex;align-items:center;justify-content:center;text-align:center;}
@@ -2325,6 +2951,11 @@ export default function App() {
                   {masked ? <EyeOff size={15} strokeWidth={1.9} /> : <Eye size={15} strokeWidth={1.9} />}
                 </button>
               </div>
+              {netDelta != null && !masked && (
+                <div style={{ marginTop: 6, fontSize: 14, fontWeight: 600, color: netDelta >= 0 ? C.positive : C.error }}>
+                  {netDelta >= 0 ? "+" : ""}{eur(netDelta)} <span style={{ color: C.mutedSoft, fontWeight: 500 }}>seit {monthName(lastMonthSnap.m)}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -2386,6 +3017,97 @@ export default function App() {
             </>
           )}
 
+          {dueContracts.length > 0 && (
+            <>
+              <SectionTitle>Kündigung fällig</SectionTitle>
+              <Card>
+                {dueContracts.slice(0, 4).map((e) => (
+                  <div className="fc-warnrow" key={e.id}>
+                    <span className="nm">{e.name}</span>
+                    <span className="dt">
+                      {e.days < 0 ? "Frist verstrichen" : e.days === 0 ? "heute" : `in ${e.days} T.`}
+                    </span>
+                    <button className="fc-chip" onClick={() => { setTab("expenses"); setCostView("fix"); setSheet({ type: "expense", item: e }); }}>Öffnen</button>
+                  </div>
+                ))}
+                <div className="fc-detail-note" style={{ marginTop: 10 }}>
+                  Kündigungsfrist läuft bis {fmtDay(dueContracts[0].deadline)} – Vertragsende {fmtDay(dueContracts[0].until)}.
+                </div>
+              </Card>
+            </>
+          )}
+
+          {snapshots.length > 1 && (
+            <>
+              <SectionTitle right={<span className="fc-sum">{snapshots.length} Monate</span>}>Vermögensverlauf</SectionTitle>
+              <Card>
+                <div style={{ width: "100%", height: 190 }}>
+                  <ResponsiveContainer>
+                    <LineChart data={snapshots} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
+                      <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
+                      <XAxis dataKey="m" tickFormatter={monthName} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={30} />
+                      <YAxis domain={["auto", "auto"]} width={58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline}
+                        tickFormatter={(v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1).replace(".", ",")} Mio` : v.toLocaleString(CUR === "CHF" ? "de-CH" : "de-DE"))} />
+                      <Tooltip
+                        labelFormatter={monthName}
+                        formatter={(v, n) => [eurFull(v), n === "net" ? "Nettovermögen" : n === "pf" ? "Vermögen" : "Schulden"]}
+                        contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 12.5, boxShadow: SHADOW }}
+                        labelStyle={{ color: C.muted }}
+                        itemStyle={{ color: C.ink }}
+                      />
+                      <Line type="monotone" dataKey="net" stroke={C.rausch} strokeWidth={2.4} dot={false} />
+                      <Line type="monotone" dataKey="pf" stroke={C.positive} strokeWidth={1.6} dot={false} strokeDasharray="4 3" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="fc-detail-note" style={{ marginTop: 8 }}>
+                  Durchgezogen: Nettovermögen · gestrichelt: Vermögen ohne Schulden. Ein Punkt pro Monat, automatisch gespeichert.
+                </div>
+              </Card>
+            </>
+          )}
+
+          <SectionTitle right={(data.goals || []).length ? <button className="fc-chip" onClick={() => setSheet({ type: "goal" })}>Neu</button> : null}>Sparziele</SectionTitle>
+          <Card>
+            {(data.goals || []).length === 0 ? (
+              <div style={{ textAlign: "center", padding: "6px 0 2px" }}>
+                <div style={{ fontSize: 14, color: C.muted, lineHeight: 1.45, marginBottom: 12 }}>
+                  Notgroschen, Auto, Urlaub – lege Ziele fest und sieh, wann du sie erreichst.
+                </div>
+                <Btn small onClick={() => setSheet({ type: "goal" })}>Sparziel anlegen</Btn>
+              </div>
+            ) : (data.goals || []).map((g) => {
+              const target = Number(g.target) || 0;
+              const saved = Number(g.saved) || 0;
+              const pct = target > 0 ? Math.min(100, (saved / target) * 100) : 0;
+              const rest = Math.max(0, target - saved);
+              const rate = budgetMode ? savingsTotal : surplus;
+              const months = rest > 0 && rate > 0 ? Math.ceil(rest / rate) : rest <= 0 ? 0 : null;
+              const dueMonths = g.deadline ? monthsUntil(g.deadline) : null;
+              return (
+                <div className="fc-goal" key={g.id}>
+                  <div className="top">
+                    <span className="nm">{g.name}</span>
+                    <span className="am">{eur(saved)} / {eur(target)}</span>
+                  </div>
+                  <div className="track"><span style={{ width: `${pct}%`, background: rest <= 0 ? C.positive : C.rausch }} /></div>
+                  <div className="meta">
+                    <span>{rest <= 0 ? "Ziel erreicht" : `noch ${eur(rest)}`}</span>
+                    <span>
+                      {rest <= 0 ? "" : months == null ? "kein Überschuss" : `≈ ${months} Mon.`}
+                      {dueMonths != null && rest > 0 && ` · Ziel in ${dueMonths} Mon.`}
+                    </span>
+                  </div>
+                  <div className="acts">
+                    <Btn small kind="ghost" onClick={() => setSheet({ type: "goalPay", id: g.id })}>Einzahlen</Btn>
+                    <Btn small kind="ghost" onClick={() => setSheet({ type: "goal", item: g })}>Bearbeiten</Btn>
+                    <button className="fc-del" onClick={() => removeGoal(g.id)} aria-label="Ziel löschen">–</button>
+                  </div>
+                </div>
+              );
+            })}
+          </Card>
+
           {(data.investments.length > 0 || creditBalance > 0) && (
             <>
               <SectionTitle>Vermögen</SectionTitle>
@@ -2416,11 +3138,10 @@ export default function App() {
           </div>
           <div style={{ height: 12 }} />
           {data.incomes.length === 0
-            ? <Empty text="Erfasse Gehalt, Kindergeld, Elterngeld und weitere Zuschüsse." />
+            ? <Empty text="Erfasse Gehalt, Kindergeld, Elterngeld und weitere Zuschüsse." action={<Btn small onClick={() => setSheet({ type: "income" })}>Einnahme hinzufügen</Btn>} />
             : <Card>{data.incomes.map((i) => (
                 <ListItem key={i.id}
                   lead={<Lead icon={INCOME_ICONS[i.type] || Coins} />}
-                  armed={pendingDelete === i.id}
                   title={i.name}
                   sub={INCOME_TYPES.find((t) => t.id === i.type)?.label}
                   value={eur(i.amount)}
@@ -2439,14 +3160,17 @@ export default function App() {
             <button className={costView === "fix" ? "active" : ""} onClick={() => setCostView("fix")}>Fixkosten</button>
             <button className={costView === "variabel" ? "active" : ""} onClick={() => setCostView("variabel")}>Variabel</button>
           </div>
+          {data.expenses.filter((e) => (costView === "fix" ? e.kind !== "variabel" : e.kind === "variabel")).length > 7 && (
+            <SearchBar value={search} onChange={setSearch} placeholder="Kosten suchen" />
+          )}
           {costView === "fix" ? (
             <>
               <div className="fc-kpis">
                 <div className="fc-kpi"><div className="l">Fixkosten / Monat</div><div className="v">{eur(fixTotal)}</div></div>
                 <div className="fc-kpi"><div className="l">Versicherungen</div><div className="v">{eur(catTotals.find((c) => c.id === "versicherung")?.value || 0)}</div></div>
               </div>
-              {EXPENSE_CATS.map((cat) => {
-                const items = data.expenses.filter((e) => e.category === cat.id && e.kind !== "variabel");
+              {fixCats.map((cat) => {
+                const items = data.expenses.filter((e) => e.category === cat.id && e.kind !== "variabel" && matches(e.name, cat.label));
                 if (!items.length) return null;
                 return (
                   <React.Fragment key={cat.id}>
@@ -2454,11 +3178,14 @@ export default function App() {
                     <Card>
                       {items.map((e) => (
                         <ListItem key={e.id}
-                          lead={<Lead icon={ALL_CAT_ICONS[e.category] || MoreHorizontal} />}
-                          armed={pendingDelete === e.id}
+                          lead={<Lead icon={ALL_CAT_ICONS[e.category] || Tag} />}
                           title={e.name}
                           tag={e.interval === "jaehrlich" ? <YearTag /> : null}
-                          sub={e.interval === "jaehrlich" ? `${eurFull(e.amount)} / Jahr` : "monatlich"}
+                          sub={<Sub parts={[
+                            e.interval === "jaehrlich" ? `${eurFull(e.amount)} / Jahr` : "monatlich",
+                            e.until ? `bis ${fmtDay(e.until)}` : null,
+                          ]} />}
+                          note={dueContracts.some((x) => x.id === e.id) ? `Kündigung bis ${fmtDay((dueContracts.find((x) => x.id === e.id) || {}).deadline)}` : null}
                           value={eur(monthly(e))}
                           onEdit={() => setSheet({ type: "expense", item: e })}
                           onDelete={() => remove("expenses", e.id)}
@@ -2468,16 +3195,15 @@ export default function App() {
                   </React.Fragment>
                 );
               })}
-              {data.expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen").length === 0 && <div style={{ marginTop: 12 }}><Empty text="Erfasse Versicherungen, Miete, Abos und andere Fixkosten – monatlich oder jährlich." /></div>}
+              {data.expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen").length === 0 && <div style={{ marginTop: 12 }}><Empty text="Erfasse Versicherungen, Miete, Abos und andere Fixkosten – monatlich oder jährlich." action={<Btn small onClick={() => setSheet({ type: "expense", kind: "fix" })}>Fixkosten hinzufügen</Btn>} /></div>}
               {budgetMode && (
                 <>
                   <SectionTitle right={<span className="fc-sum">{eur(savingsTotal)} / Monat</span>}>{SAVE_CAT.label}</SectionTitle>
                   {data.expenses.filter((e) => e.kind === "sparen").length === 0
-                    ? <Empty text="Lege fest, wie viel du jeden Monat fest zur Seite legst. Die Sparrate zählt nicht zu den Gesamtkosten." />
+                    ? <Empty text="Lege fest, wie viel du jeden Monat fest zur Seite legst. Die Sparrate zählt nicht zu den Gesamtkosten." action={<Btn small onClick={() => setSheet({ type: "expense", kind: "sparen" })}>Sparrate festlegen</Btn>} />
                     : <Card>{data.expenses.filter((e) => e.kind === "sparen").map((e) => (
                         <ListItem key={e.id}
                           lead={<Lead icon={PiggyBank} />}
-                          armed={pendingDelete === e.id}
                           title={e.name}
                           tag={e.interval === "jaehrlich" ? <YearTag /> : null}
                           sub={e.interval === "jaehrlich" ? `${eurFull(e.amount)} / Jahr` : "monatlich"}
@@ -2512,8 +3238,8 @@ export default function App() {
                   </>
                 )}
               </div>
-              {VARIABLE_CATS.map((cat) => {
-                const items = data.expenses.filter((e) => e.category === cat.id && e.kind === "variabel");
+              {varCats.map((cat) => {
+                const items = data.expenses.filter((e) => e.category === cat.id && e.kind === "variabel" && matches(e.name, cat.label));
                 if (!items.length) return null;
                 return (
                   <React.Fragment key={cat.id}>
@@ -2521,8 +3247,7 @@ export default function App() {
                     <Card>
                       {items.map((e) => (
                         <ListItem key={e.id}
-                          lead={<Lead icon={ALL_CAT_ICONS[e.category] || MoreHorizontal} />}
-                          armed={pendingDelete === e.id}
+                          lead={<Lead icon={ALL_CAT_ICONS[e.category] || Tag} />}
                           title={e.name}
                           tag={e.interval === "jaehrlich" ? <YearTag /> : null}
                           sub={e.interval === "jaehrlich" ? `${eurFull(e.amount)} / Jahr` : "monatlich"}
@@ -2535,7 +3260,7 @@ export default function App() {
                   </React.Fragment>
                 );
               })}
-              {data.expenses.filter((e) => e.kind === "variabel").length === 0 && <div style={{ marginTop: 12 }}><Empty text="Erfasse variable Ausgaben wie Lebensmittel, Drogerie, Restaurant oder Urlaub – so siehst du, wohin dein Alltagsgeld fliesst." /></div>}
+              {data.expenses.filter((e) => e.kind === "variabel").length === 0 && <div style={{ marginTop: 12 }}><Empty text="Erfasse variable Ausgaben wie Lebensmittel, Drogerie, Restaurant oder Urlaub – so siehst du, wohin dein Alltagsgeld fliesst." action={<Btn small onClick={() => setSheet({ type: "expense", kind: "variabel" })}>Ausgabe hinzufügen</Btn>} /></div>}
               <div style={{ margin: "0 16px" }}><Btn onClick={() => setSheet({ type: "expense", kind: "variabel" })}>Variable Kosten hinzufügen</Btn></div>
             </>
           )}
@@ -2557,11 +3282,10 @@ export default function App() {
           </div>
           <div style={{ height: 12 }} />
           {data.credits.length === 0
-            ? <Empty text="Erfasse laufende Kredite mit Monatsrate und Restschuld." />
+            ? <Empty text="Erfasse laufende Kredite mit Monatsrate und Restschuld." action={<Btn small onClick={() => setSheet({ type: "credit" })}>Kredit hinzufügen</Btn>} />
             : <Card>{data.credits.map((c) => (
                 <ListItem key={c.id}
                   lead={<Lead icon={Landmark} />}
-                  armed={pendingDelete === c.id}
                   title={c.name}
                   sub={<Sub parts={[
                     `Restschuld ${eur(c.balance)}`,
@@ -2585,9 +3309,11 @@ export default function App() {
             <div className="fc-kpi">
               <div className="l">Gewinn / Verlust</div>
               <div className="v" style={{ color: gain >= 0 ? C.positive : C.error }}>{gain >= 0 ? "+" : ""}{eur(gain)}</div>
-              {realizedTotal !== 0 && (
+              {(realizedTotal !== 0 || divTotal12 > 0) && (
                 <div style={{ fontSize: 12.5, marginTop: 3, color: C.muted }}>
-                  davon realisiert: {realizedTotal >= 0 ? "+" : ""}{eur(realizedTotal)}
+                  {realizedTotal !== 0 && <>realisiert {realizedTotal >= 0 ? "+" : ""}{eur(realizedTotal)}</>}
+                  {realizedTotal !== 0 && divTotal12 > 0 && " · "}
+                  {divTotal12 > 0 && <>Ausschüttung {eur(divTotal12)}</>}
                 </div>
               )}
             </div>
@@ -2613,10 +3339,11 @@ export default function App() {
               <button className={investSort === "type" ? "active" : ""} onClick={() => setInvestSort("type")}>Nach Art</button>
             </div>
           )}
+          {groups.length > 7 && <SearchBar value={search} onChange={setSearch} placeholder="Position suchen" />}
           {priceStatus && <div className="fc-status">{priceStatus}</div>}
           {groups.length === 0
-            ? <Empty text="Erfasse Aktien, ETFs und Krypto – der Ticker reicht, Name und Logo kommen automatisch. Auch Immobilien und Cash-Konten lassen sich als Position anlegen." />
-            : <Card>{[...groups].sort((a, b) => {
+            ? <Empty text="Erfasse Aktien, ETFs und Krypto – der Ticker reicht, Name und Logo kommen automatisch. Auch Immobilien und Cash-Konten lassen sich als Position anlegen." action={<Btn small onClick={() => setSheet({ type: "invest" })}>Position hinzufügen</Btn>} />
+            : <Card>{[...groups].filter((g) => matches(g.name, g.ref.symbol)).sort((a, b) => {
                 if (investSort === "type") {
                   const ord = { aktie: 0, etf: 1, krypto: 2, rohstoff: 3, immobilie: 4, cash: 5 };
                   const d = (ord[a.type] ?? 9) - (ord[b.type] ?? 9);
@@ -2649,7 +3376,6 @@ export default function App() {
                       : g.type === "rohstoff"
                         ? <Lead icon={Gem} />
                         : <AssetLogo inv={g.ref} />}
-                    armed={pendingDelete === g.gkey}
                     title={g.name}
                     sub={<Sub parts={subParts} />}
                     value={
@@ -2661,18 +3387,20 @@ export default function App() {
                       </span>
                     }
                     note={g.lots.some((l) => priceFailIds.includes(l.id)) ? "Keine Live-Daten – zum manuellen Eintragen tippen" : null}
-                    onEdit={() => setSheet(isValue ? { type: "invest", item: g.ref } : { type: "group", gkey: g.gkey })}
+                    onEdit={() => setSheet(isCash ? { type: "cash", id: g.ref.id } : isValue ? { type: "invest", item: g.ref } : { type: "group", gkey: g.gkey })}
                     onDelete={() => removeGroup(g.gkey)}
                   />
                 );
               })}</Card>}
           <div style={{ margin: "0 16px", display: "flex", gap: 12 }}>
             <Btn onClick={() => setSheet({ type: "invest" })}>+ Position</Btn>
-            <Btn kind="ghost" disabled={!data.investments.length || priceStatus.startsWith("Kurse werden")} onClick={refreshPrices}>Kurse aktualisieren</Btn>
+            <Btn kind="ghost" disabled={!data.investments.length || priceStatus.startsWith("Kurse werden")} onClick={refreshPrices}>
+              Kurse{lastPriceUpdate > 0 ? ` · ${agoLabel(lastPriceUpdate)}` : " laden"}
+            </Btn>
           </div>
           <div className="fc-hint">
             Krypto und Edelmetalle laufen ohne Key, Aktien und ETFs über die API-Keys in den Einstellungen.
-            {lastPriceUpdate > 0 && <><br />Kurse aktualisiert: {new Date(lastPriceUpdate).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</>}
+            Kurse werden beim Öffnen automatisch geladen, wenn sie älter als sechs Stunden sind.
           </div>
         </>
       )}
@@ -2685,7 +3413,13 @@ export default function App() {
       )}
       {sheet?.type === "expense" && (
         <Sheet title={sheet.item ? ((sheet.item.kind === "sparen") ? "Sparrate bearbeiten" : "Ausgabe bearbeiten") : ((sheet.kind || "fix") === "variabel" ? "Neue variable Ausgabe" : (sheet.kind === "sparen" ? "Neue Sparrate" : "Neue Fixkosten"))} onClose={() => setSheet(null)}>
-          <ExpenseForm initial={sheet.item} kind={sheet.kind} onSave={(f) => save("expenses", f)} />
+          <ExpenseForm
+            initial={sheet.item}
+            kind={sheet.kind}
+            catList={((sheet.item && sheet.item.kind) || sheet.kind) === "variabel" ? varCats : fixCats}
+            onAddCat={addCat}
+            onSave={(f) => save("expenses", f)}
+          />
         </Sheet>
       )}
       {sheet?.type === "forecast" && (
@@ -2712,9 +3446,19 @@ export default function App() {
             <CreditDetail
               credit={c}
               onExtra={() => setSheet({ type: "extra", id: c.id })}
+              onPlan={() => setSheet({ type: "plan", id: c.id })}
               onDeleteExtra={(exId) => removeExtra(c.id, exId)}
               onEdit={() => setSheet({ type: "credit", item: c, back: c.id })}
             />
+          </Sheet>
+        );
+      })()}
+      {sheet?.type === "plan" && (() => {
+        const c = data.credits.find((x) => x.id === sheet.id);
+        if (!c) return null;
+        return (
+          <Sheet title={`Tilgungsplan – ${c.name}`} onClose={() => setSheet({ type: "creditDetail", id: c.id })}>
+            <AmortView credit={c} />
           </Sheet>
         );
       })()}
@@ -2723,18 +3467,112 @@ export default function App() {
         if (!c) return null;
         return (
           <Sheet title={`Sondertilgung – ${c.name}`} onClose={() => setSheet({ type: "creditDetail", id: c.id })}>
-            <ExtraPaymentForm credit={c} onSave={(e) => bookExtra(c.id, e)} />
+            <ExtraPaymentForm credit={c} cashAvail={cashInCur} onSave={(e) => bookExtra(c.id, e)} />
           </Sheet>
         );
       })()}
+      {sheet?.type === "div" && (() => {
+        const g = groups.find((x) => x.gkey === sheet.gkey);
+        if (!g) return null;
+        return (
+          <Sheet title={`Ausschüttung – ${g.name}`} onClose={() => setSheet({ type: "group", gkey: g.gkey })}>
+            <DivForm group={g} onSave={(v) => bookDiv(g.gkey, v)} />
+          </Sheet>
+        );
+      })()}
+      {sheet?.type === "cash" && (() => {
+        const inv = data.investments.find((x) => x.id === sheet.id);
+        if (!inv) return null;
+        return (
+          <Sheet title={inv.name} onClose={() => setSheet(null)}>
+            <CashDetail
+              inv={inv}
+              fxRates={fxRates}
+              onIn={() => setSheet({ type: "cashFlow", id: inv.id, dir: 1 })}
+              onOut={() => setSheet({ type: "cashFlow", id: inv.id, dir: -1 })}
+              onEdit={() => setSheet({ type: "invest", item: inv, backCash: inv.id })}
+              onDeleteFlow={(fid) => removeCashFlow(inv.id, fid)}
+            />
+          </Sheet>
+        );
+      })()}
+      {sheet?.type === "cashFlow" && (() => {
+        const inv = data.investments.find((x) => x.id === sheet.id);
+        if (!inv) return null;
+        const isIn = sheet.dir > 0;
+        return (
+          <Sheet title={`${isIn ? "Einzahlung" : "Auszahlung"} – ${inv.name}`} onClose={() => setSheet({ type: "cash", id: inv.id })}>
+            <AmountForm
+              label={`Betrag (${inv.ccy || CUR})`}
+              hint={`Aktueller Bestand: ${money(cashAmount(inv), inv.ccy || CUR)}`}
+              cta={isIn ? "Einzahlung buchen" : "Auszahlung buchen"}
+              onSave={({ amt, date }) => bookCashFlow(inv.id, isIn ? amt : -amt, date, isIn ? "Einzahlung" : "Auszahlung")}
+            />
+          </Sheet>
+        );
+      })()}
+      {sheet?.type === "goal" && (
+        <Sheet title={sheet.item ? "Sparziel bearbeiten" : "Neues Sparziel"} onClose={() => setSheet(null)}>
+          <GoalForm initial={sheet.item} onSave={saveGoal} />
+        </Sheet>
+      )}
+      {sheet?.type === "goalPay" && (() => {
+        const g = (data.goals || []).find((x) => x.id === sheet.id);
+        if (!g) return null;
+        return (
+          <Sheet title={`Einzahlen – ${g.name}`} onClose={() => setSheet(null)}>
+            <AmountForm
+              label={`Betrag (${curSym()})`}
+              hint={`Bisher gespart: ${eurFull(Number(g.saved) || 0)} von ${eurFull(Number(g.target) || 0)}`}
+              cta="Einzahlung buchen"
+              initialDate={false}
+              onSave={({ amt }) => { addToGoal(g.id, amt); setSheet(null); }}
+            />
+          </Sheet>
+        );
+      })()}
+      {sheet?.type === "cats" && (
+        <Sheet title="Kategorien" onClose={() => setSheet({ type: "settings" })}>
+          {[{ k: "fix", label: "Fixkosten", list: fixCats }, { k: "variabel", label: "Variable Kosten", list: varCats }].map((grp) => (
+            <div key={grp.k}>
+              <div className="fc-detail-sec">{grp.label}</div>
+              {grp.list.map((c) => {
+                const used = data.expenses.filter((e) => e.category === c.id).length;
+                return (
+                  <div className="fc-detail-row" key={c.id}>
+                    <span className="dot" style={{ width: 10, height: 10, borderRadius: 999, background: c.color, flexShrink: 0 }} />
+                    <div className="m" style={{ cursor: "default" }}>
+                      <input
+                        className="fc-inline"
+                        value={c.label}
+                        onChange={(e) => renameCat(c.id, e.target.value)}
+                        aria-label={`${c.label} umbenennen`}
+                      />
+                      <div className="s">{used ? `${used} Einträge` : "nicht genutzt"}</div>
+                    </div>
+                    {c.custom && (
+                      <div className="r">
+                        <button className="fc-del" disabled={used > 0} onClick={() => removeCat(c.id)} aria-label="Kategorie löschen">–</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          <div className="fc-detail-note" style={{ marginTop: 14 }}>
+            Namen lassen sich direkt überschreiben. Eigene Kategorien legst du beim Erfassen einer Ausgabe an; löschen geht nur, wenn keine Einträge daran hängen.
+          </div>
+        </Sheet>
+      )}
       {sheet?.type === "invest" && (
         <Sheet
           title={sheet.item ? "Kauf bearbeiten" : sheet.preset ? `${sheet.preset.name} zukaufen` : "Neue Position"}
-          onClose={() => setSheet(sheet.back ? { type: "group", gkey: sheet.back } : null)}
+          onClose={() => setSheet(sheet.back ? { type: "group", gkey: sheet.back } : sheet.backCash ? { type: "cash", id: sheet.backCash } : null)}
         >
           <InvestForm
             initial={sheet.item || sheet.preset}
-            onSave={(f) => { save("investments", f); if (sheet.back) setSheet({ type: "group", gkey: sheet.back }); }}
+            onSave={(f) => { save("investments", f); if (sheet.back) setSheet({ type: "group", gkey: sheet.back }); if (sheet.backCash) setSheet({ type: "cash", id: sheet.backCash }); }}
             finnhubKey={settings.finnhubKey}
           />
         </Sheet>
@@ -2746,6 +3584,9 @@ export default function App() {
           <Sheet title={g.name} onClose={() => setSheet(null)}>
             <AssetDetail
               group={g}
+              divs={(data.divs || []).filter((x) => x.gkey === g.gkey)}
+              onDiv={() => setSheet({ type: "div", gkey: g.gkey })}
+              onDeleteDiv={removeDiv}
               onAddLot={() => setSheet({
                 type: "invest",
                 back: g.gkey,
@@ -2788,6 +3629,11 @@ export default function App() {
             <b>Budget</b>: du legst eine feste Sparrate fest (Reiter Kosten → Fixkosten). Sie zählt nicht zu den Gesamtkosten;
             unter „Variabel“ siehst du stattdessen dein restliches Budget.
           </div>
+          <Field label="Kategorien">
+            <Btn kind="ghost" onClick={() => setSheet({ type: "cats" })} style={{ gap: 8 }}>
+              <Tag size={15} strokeWidth={1.9} /> Kategorien verwalten
+            </Btn>
+          </Field>
           <Field label="Darstellung">
             <div style={{ display: "flex", gap: 8 }}>
               {[{ id: "light", label: "Hell", Ic: Sun }, { id: "dark", label: "Dunkel", Ic: Moon }, { id: "system", label: "System", Ic: Monitor }].map((o) => (
@@ -2871,6 +3717,16 @@ export default function App() {
         </Sheet>
       )}
 
+      {/* ---------- Rückgängig-Leiste ---------- */}
+      {undo && (
+        <div className="fc-undo">
+          <div className="fc-undo-inner">
+            <span className="txt">{undo.label}</span>
+            <button onClick={doUndo}>Rückgängig</button>
+          </div>
+        </div>
+      )}
+
       {/* ---------- Tab-Bar ---------- */}
       <nav className="fc-tabs">
         <div className="fc-tabs-inner">
@@ -2881,7 +3737,7 @@ export default function App() {
             { id: "credits", label: "Kredite", ic: Landmark },
             { id: "invest", label: "Invest", ic: TrendingUp },
           ].map((t) => (
-            <button key={t.id} className={`fc-tab ${tab === t.id ? "active" : ""}`} onClick={() => { setTab(t.id); setSheet(null); }}>
+            <button key={t.id} className={`fc-tab ${tab === t.id ? "active" : ""}`} onClick={() => { setTab(t.id); setSheet(null); setSearch(""); }}>
               <span className="ic" aria-hidden><t.ic size={20} strokeWidth={1.75} /></span>
               {t.label}
               <span className="u" aria-hidden />
