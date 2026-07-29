@@ -1018,7 +1018,7 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
     <Card style={{ paddingBottom: 12 }}>
       <div className="fc-chart-head">
         <div>
-          <div className="lbl">Wertentwicklung</div>
+          <div className="lbl">Wertentwicklung{eligible.length && eligible.length < investments.length ? ` · ${eligible.length} von ${investments.length} Positionen` : ""}</div>
           <div className="val">{view.last ? eur(view.last.value) : "–"}</div>
           {view.first && view.last && (
             <div className="chg" style={{ color: chg >= 0 ? C.positive : C.error }}>
@@ -1048,7 +1048,7 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
             <LineChart data={view.rows} margin={{ top: 6, right: 10, bottom: 0, left: 0 }}>
               <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
               <XAxis dataKey="d" tickFormatter={fmtDate} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={38} />
-              <YAxis tickFormatter={(v) => (showPerf ? `${Math.round(v)} %` : compact(v))} width={showPerf ? 42 : 46} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} />
+              <YAxis domain={["auto", "auto"]} tickFormatter={(v) => (showPerf ? `${Math.round(v)} %` : compact(v))} width={showPerf ? 42 : 46} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} />
               <Tooltip
                 labelFormatter={fmtDate}
                 formatter={(v, n) => [showPerf ? `${Number(v).toFixed(1).replace(".", ",")} %` : eurFull(v), n]}
