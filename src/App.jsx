@@ -7,7 +7,7 @@ import {
   Heart, Stethoscope, Users, Banknote,
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap,
   Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown, Check, Info,
-  Search, Percent, ArrowDownLeft, ArrowUpRight, Tag,
+  Search, Percent, ArrowDownLeft, ArrowUpRight, Tag, Pencil, Trash2,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -1077,6 +1077,75 @@ function InvestForm({ initial, onSave, finnhubKey }) {
   );
 }
 
+/* ---------- Kategorien verwalten ---------- */
+function CatManager({ sections, counts, onRename, onRemove }) {
+  const [editId, setEditId] = useState(null);
+  const [draft, setDraft] = useState("");
+  const start = (c) => { setEditId(c.id); setDraft(c.label); };
+  const commit = () => {
+    const name = draft.trim();
+    if (editId && name) onRename(editId, name);
+    setEditId(null);
+  };
+  return (
+    <div>
+      {sections.map((sec) => (
+        <div key={sec.kind} style={{ marginBottom: 18 }}>
+          <div className="fc-catsec">{sec.label}</div>
+          <div className="fc-catcard">
+            {sec.list.map((c) => {
+              const used = counts[c.id] || 0;
+              const editing = editId === c.id;
+              return (
+                <div className={`fc-catrow ${editing ? "editing" : ""}`} key={c.id}>
+                  <span className="dot" style={{ background: c.color }} />
+                  {editing ? (
+                    <input
+                      className="fc-catinput"
+                      value={draft}
+                      autoFocus
+                      onFocus={(e) => e.target.select()}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onBlur={commit}
+                      onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditId(null); }}
+                    />
+                  ) : (
+                    <div className="txt">
+                      <div className="nm">{c.label}</div>
+                      <div className="sub">{used ? `${used} ${used === 1 ? "Eintrag" : "Einträge"}` : "nicht genutzt"}</div>
+                    </div>
+                  )}
+                  <div className="acts">
+                    {editing ? (
+                      <button className="fc-catbtn ok" onMouseDown={(e) => e.preventDefault()} onClick={commit} aria-label="Namen speichern">
+                        <Check size={15} strokeWidth={2.4} />
+                      </button>
+                    ) : (
+                      <>
+                        <button className="fc-catbtn" onClick={() => start(c)} aria-label={`${c.label} umbenennen`}>
+                          <Pencil size={14} strokeWidth={2} />
+                        </button>
+                        {c.custom && (
+                          <button className="fc-catbtn del" disabled={used > 0} onClick={() => onRemove(c.id)} aria-label={`${c.label} löschen`}>
+                            <Trash2 size={14} strokeWidth={2} />
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+      <div className="fc-detail-note">
+        Zum Umbenennen auf das Stift-Symbol tippen. Eigene Kategorien legst du beim Erfassen einer Ausgabe an – löschen geht nur, solange keine Einträge daran hängen.
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Sparziel ---------- */
 function GoalForm({ initial, onSave }) {
   const [f, setF] = useState(initial || { name: "", target: "", saved: "", deadline: "" });
@@ -2131,6 +2200,11 @@ export default function App() {
   const varCats = useMemo(() => catsOf("variabel", data), [data.cats, data.catNames]);
   const allCats = useMemo(() => [...fixCats, ...varCats, SAVE_CAT], [fixCats, varCats]);
   const catLabel = (id) => (allCats.find((c) => c.id === id) || {}).label || "";
+  const catCounts = useMemo(() => {
+    const m = {};
+    for (const e of data.expenses) m[e.category] = (m[e.category] || 0) + 1;
+    return m;
+  }, [data.expenses]);
 
   const catTotals = useMemo(() =>
     allCats.map((c) => ({
@@ -2789,8 +2863,23 @@ export default function App() {
         .fc-warnrow .nm{flex:1;color:${C.ink};font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-warnrow .dt{color:${C.error};font-weight:600;white-space:nowrap;}
         .fc-tag.warn{border-color:${C.error};color:${C.error};}
-        .fc-inline{width:100%;background:none;border:none;border-bottom:1px dashed ${C.hairline};color:${C.ink};font-size:15px;font-weight:600;padding:2px 0;font-family:inherit;}
-        .fc-inline:focus{outline:none;border-bottom-color:${C.ink};}
+        .fc-catsec{font-size:13px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:${C.mutedSoft};margin:0 0 8px 2px;}
+        .fc-catcard{border:1px solid ${C.hairline};border-radius:14px;overflow:hidden;background:${C.canvas};}
+        .fc-catrow{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid ${C.hairlineSoft};}
+        .fc-catrow:last-child{border-bottom:none;}
+        .fc-catrow.editing{background:${C.soft};}
+        .fc-catrow .dot{width:10px;height:10px;border-radius:9999px;flex-shrink:0;}
+        .fc-catrow .txt{flex:1;min-width:0;}
+        .fc-catrow .nm{font-size:15px;font-weight:600;color:${C.ink};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-catrow .sub{font-size:12.5px;color:${C.mutedSoft};margin-top:1px;}
+        .fc-catinput{flex:1;min-width:0;background:${C.canvas};border:1px solid ${C.ink};border-radius:8px;padding:8px 10px;color:${C.ink};font-size:15px;font-weight:600;font-family:inherit;}
+        .fc-catinput:focus{outline:none;box-shadow:inset 0 0 0 1px ${C.ink};}
+        .fc-catrow .acts{display:flex;align-items:center;gap:6px;flex-shrink:0;}
+        .fc-catbtn{width:34px;height:34px;border-radius:9999px;border:none;background:${C.strong};color:${C.muted};display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;}
+        .fc-catbtn:active{background:${C.borderStrong};}
+        .fc-catbtn.ok{background:${C.rausch};color:#fff;}
+        .fc-catbtn.del{color:${C.error};}
+        .fc-catbtn:disabled{opacity:.35;cursor:not-allowed;}
         .fc-planhead,.fc-planrow{display:grid;grid-template-columns:52px 1fr 1fr 1fr;gap:6px;font-variant-numeric:tabular-nums;}
         .fc-planhead{font-size:12px;color:${C.mutedSoft};padding:4px 0 6px;border-bottom:1px solid ${C.hairline};}
         .fc-planhead span+span,.fc-planrow span+span{text-align:right;}
@@ -3540,36 +3629,15 @@ export default function App() {
       })()}
       {sheet?.type === "cats" && (
         <Sheet title="Kategorien" onClose={() => setSheet({ type: "settings" })}>
-          {[{ k: "fix", label: "Fixkosten", list: fixCats }, { k: "variabel", label: "Variable Kosten", list: varCats }].map((grp) => (
-            <div key={grp.k}>
-              <div className="fc-detail-sec">{grp.label}</div>
-              {grp.list.map((c) => {
-                const used = data.expenses.filter((e) => e.category === c.id).length;
-                return (
-                  <div className="fc-detail-row" key={c.id}>
-                    <span className="dot" style={{ width: 10, height: 10, borderRadius: 999, background: c.color, flexShrink: 0 }} />
-                    <div className="m" style={{ cursor: "default" }}>
-                      <input
-                        className="fc-inline"
-                        value={c.label}
-                        onChange={(e) => renameCat(c.id, e.target.value)}
-                        aria-label={`${c.label} umbenennen`}
-                      />
-                      <div className="s">{used ? `${used} Einträge` : "nicht genutzt"}</div>
-                    </div>
-                    {c.custom && (
-                      <div className="r">
-                        <button className="fc-del" disabled={used > 0} onClick={() => removeCat(c.id)} aria-label="Kategorie löschen">–</button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
-          <div className="fc-detail-note" style={{ marginTop: 14 }}>
-            Namen lassen sich direkt überschreiben. Eigene Kategorien legst du beim Erfassen einer Ausgabe an; löschen geht nur, wenn keine Einträge daran hängen.
-          </div>
+          <CatManager
+            sections={[
+              { kind: "fix", label: "Fixkosten", list: fixCats },
+              { kind: "variabel", label: "Variable Kosten", list: varCats },
+            ]}
+            counts={catCounts}
+            onRename={renameCat}
+            onRemove={removeCat}
+          />
         </Sheet>
       )}
       {sheet?.type === "invest" && (
