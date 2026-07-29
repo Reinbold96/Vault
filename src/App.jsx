@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAxis, YAxis } from "recharts";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAxis, YAxis, Sector } from "recharts";
 import {
   Shield, Home, Car, Repeat, ShoppingCart, MoreHorizontal,
   Wallet, Baby, HeartHandshake, Coins, Landmark,
   LayoutGrid, Receipt, TrendingUp, Settings, Download, Upload,
   Heart, Stethoscope, Users, Banknote,
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap,
-  Sun, Moon, Monitor, Gem,
+  Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -204,6 +204,41 @@ async function fetchFx(from, to) {
     if (j && j.rates && j.rates[to]) return j.rates[to];
   } catch { /* down */ }
   return 0;
+}
+
+/* Zensur-Maske für Vermögenswerte */
+const MASK = "*****";
+
+/* ---------- WebAuthn App-Lock (Biometrie, OS-Fallback PIN) ---------- */
+const b64e = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const b64d = (s) => {
+  const t = s.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(t + "=".repeat((4 - (t.length % 4)) % 4));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+};
+const bioAvailable = () => typeof window !== "undefined" && !!(window.PublicKeyCredential && navigator.credentials);
+async function bioRegister() {
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  const userId = crypto.getRandomValues(new Uint8Array(16));
+  const cred = await navigator.credentials.create({
+    publicKey: {
+      challenge,
+      rp: { name: "Vault", id: location.hostname },
+      user: { id: userId, name: "vault", displayName: "Vault" },
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "preferred" },
+      timeout: 60000,
+      attestation: "none",
+    },
+  });
+  return cred ? b64e(cred.rawId) : null;
+}
+async function bioVerify(credId) {
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  const pk = { challenge, timeout: 60000, userVerification: "required", rpId: location.hostname };
+  if (credId) pk.allowCredentials = [{ type: "public-key", id: b64d(credId), transports: ["internal"] }];
+  const res = await navigator.credentials.get({ publicKey: pk });
+  return !!res;
 }
 
 const monthly = (item) =>
@@ -597,6 +632,7 @@ function CashflowBar({ catTotals, creditRate, surplus }) {
   ];
   const total = segs.reduce((s, x) => s + x.value, 0);
   if (total <= 0) return null;
+  const sorted = [...segs].sort((a, b) => b.value - a.value);
   return (
     <div>
       <div className="fc-flowbar">
@@ -604,10 +640,19 @@ function CashflowBar({ catTotals, creditRate, surplus }) {
           <div key={i} title={`${s.label}: ${eur(s.value)}`} style={{ width: `${(s.value / total) * 100}%`, background: s.color }} />
         ))}
       </div>
-      <div className="fc-flowlegend">
-        {segs.map((s, i) => (
-          <span key={i}><i style={{ background: s.color }} />{s.label} {eur(s.value)}</span>
-        ))}
+      <div className="fc-flowlist">
+        {sorted.map((s, i) => {
+          const pct = (s.value / total) * 100;
+          return (
+            <div className="fc-flowrow" key={i}>
+              <span className="dot" style={{ background: s.color }} />
+              <span className="lbl">{s.label}</span>
+              <span className="track"><span className="fill" style={{ width: `${Math.max(2, pct)}%`, background: s.color }} /></span>
+              <span className="amt">{eur(s.value)}</span>
+              <span className="pct">{pct < 1 ? "<1" : Math.round(pct)} %</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -696,6 +741,10 @@ export default function App() {
   const [sheet, setSheet] = useState(null);
   const [priceStatus, setPriceStatus] = useState("");
   const [priceFailIds, setPriceFailIds] = useState([]);
+  const [activeCat, setActiveCat] = useState(-1);
+  const [masked, setMasked] = useState(() => { try { return localStorage.getItem("finanz_masked") === "1"; } catch { return false; } });
+  const [locked, setLocked] = useState(() => { try { const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); return !!s.lockEnabled; } catch { return false; } });
+  const [lockMsg, setLockMsg] = useState("");
   const [pendingDelete, setPendingDelete] = useState(null);
   const importRef = useRef(null);
 
@@ -710,6 +759,34 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* ignore */ }
   }, [settings]);
+
+  useEffect(() => {
+    try { localStorage.setItem("finanz_masked", masked ? "1" : "0"); } catch { /* ignore */ }
+  }, [masked]);
+
+  /* Entsperren per Biometrie (Face/Fingerprint), OS fällt selbst auf PIN zurück */
+  async function unlock() {
+    setLockMsg("");
+    try {
+      const ok = await bioVerify(settings.lockCredId);
+      if (ok) setLocked(false);
+      else setLockMsg("Nicht erkannt – bitte erneut versuchen.");
+    } catch (e) {
+      setLockMsg("Entsperren abgebrochen oder nicht möglich.");
+    }
+  }
+
+  async function enableLock() {
+    setLockMsg("");
+    if (!bioAvailable()) { setLockMsg("Dieses Gerät unterstützt keine Biometrie im Browser."); return; }
+    try {
+      const id = await bioRegister();
+      if (id) setSettings((s) => ({ ...s, lockEnabled: true, lockCredId: id }));
+      else setLockMsg("Einrichtung fehlgeschlagen.");
+    } catch (e) {
+      setLockMsg("Einrichtung abgebrochen. Face ID/Fingerabdruck muss auf dem Gerät aktiv sein.");
+    }
+  }
 
   /* ---------- Theme (Hell / Dunkel / System) ---------- */
   const [systemDark, setSystemDark] = useState(() =>
@@ -1009,6 +1086,7 @@ export default function App() {
   }
 
   const monthLabel = new Date().toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+  const eurM = (v) => (masked ? MASK : eur(v));
 
   const ListItem = ({ lead, title, sub, value, valueColor, tag, armed, onEdit, onDelete, note }) => (
     <div className="fc-item">
@@ -1094,6 +1172,27 @@ export default function App() {
         .fc-gain{font-size:13px;font-weight:500;font-variant-numeric:tabular-nums;}
         .fc-hint{margin:12px 18px 0;font-size:13px;line-height:1.4;color:${C.muted};}
         .fc-note{margin-top:3px;font-size:12.5px;font-weight:500;line-height:1.3;color:${C.error};}
+        .fc-hero .lbl{display:flex;align-items:center;justify-content:center;gap:8px;}
+        .fc-eye{border:none;background:${C.strong};color:${C.muted};width:26px;height:26px;border-radius:9999px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;}
+        .fc-eye:active{background:${C.borderStrong};}
+        .fc-flowlist{margin-top:14px;display:flex;flex-direction:column;gap:2px;}
+        .fc-flowrow{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid ${C.hairlineSoft};font-size:14px;}
+        .fc-flowrow:last-child{border-bottom:none;}
+        .fc-flowrow .dot{width:9px;height:9px;border-radius:9999px;flex-shrink:0;}
+        .fc-flowrow .lbl{color:${C.body};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0;max-width:42%;}
+        .fc-flowrow .track{flex:1 1 auto;height:5px;border-radius:9999px;background:${C.strong};overflow:hidden;min-width:24px;}
+        .fc-flowrow .track .fill{display:block;height:100%;border-radius:9999px;}
+        .fc-flowrow .amt{font-variant-numeric:tabular-nums;font-weight:600;color:${C.ink};white-space:nowrap;}
+        .fc-flowrow .pct{font-variant-numeric:tabular-nums;color:${C.mutedSoft};font-size:12.5px;width:42px;text-align:right;white-space:nowrap;}
+        .recharts-wrapper svg:focus,.recharts-wrapper *:focus,.recharts-sector:focus,.recharts-surface:focus{outline:none;}
+        .recharts-sector{transition:filter .18s ease;}
+        .fc-lock{position:fixed;inset:0;background:${C.canvas};z-index:100;display:flex;align-items:center;justify-content:center;padding:24px;}
+        .fc-lock-inner{max-width:340px;width:100%;text-align:center;}
+        .fc-lock-inner .ic{width:56px;height:56px;border-radius:9999px;background:${C.strong};color:${C.ink};display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;}
+        .fc-lock-inner .ttl{font-size:22px;font-weight:600;letter-spacing:-0.3px;color:${C.ink};margin-bottom:6px;}
+        .fc-lock-inner .txt{font-size:14px;line-height:1.45;color:${C.muted};margin-bottom:20px;}
+        .fc-lock-inner .err{font-size:13px;color:${C.error};margin-top:12px;}
+        .fc-lock-alt{margin-top:14px;background:none;border:none;color:${C.mutedSoft};font-size:13px;text-decoration:underline;cursor:pointer;font-family:inherit;}
         .fc-chip{display:inline-flex;align-items:center;gap:4px;border:none;background:${C.strong};color:${C.ink};font-size:11px;font-weight:600;padding:4px 9px;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-chip:active{background:${C.borderStrong};}
         .fc-seg{display:flex;background:${C.soft};border-radius:9999px;padding:4px;margin:14px 16px 4px;gap:4px;}
@@ -1107,6 +1206,21 @@ export default function App() {
           @keyframes fcUp{from{transform:translateY(24px);opacity:.6}to{transform:translateY(0);opacity:1}}
         }
       `}</style>
+
+      {locked && (
+        <div className="fc-lock">
+          <div className="fc-lock-inner">
+            <span className="ic"><Lock size={26} strokeWidth={1.7} /></span>
+            <div className="ttl">Vault ist gesperrt</div>
+            <div className="txt">Mit Face ID, Fingerabdruck oder Geräte-PIN entsperren.</div>
+            <Btn onClick={unlock} style={{ gap: 8 }}><Fingerprint size={17} strokeWidth={1.9} /> Entsperren</Btn>
+            {lockMsg && <div className="err">{lockMsg}</div>}
+            <button className="fc-lock-alt" onClick={() => { setSettings((s) => ({ ...s, lockEnabled: false, lockCredId: "" })); setLocked(false); }}>
+              Sperre deaktivieren
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Kopf */}
       <div className="fc-header">
@@ -1140,9 +1254,19 @@ export default function App() {
           {!isEmpty && (
             <div className="fc-hero">
               <div className="num" style={{ color: netWorth >= 0 ? C.ink : C.error }}>
-                {eur(netWorth)}
+                {eurM(netWorth)}
               </div>
-              <div className="lbl">Nettovermögen</div>
+              <div className="lbl">
+                Nettovermögen
+                <button
+                  className="fc-eye"
+                  onClick={() => setMasked((m) => !m)}
+                  aria-label={masked ? "Beträge anzeigen" : "Beträge verbergen"}
+                  title={masked ? "Beträge anzeigen" : "Beträge verbergen"}
+                >
+                  {masked ? <EyeOff size={15} strokeWidth={1.9} /> : <Eye size={15} strokeWidth={1.9} />}
+                </button>
+              </div>
             </div>
           )}
 
@@ -1156,7 +1280,7 @@ export default function App() {
               </div>
               <div className="v" style={{ color: surplus >= 0 ? C.positive : C.error }}>{eur(surplus)}</div>
             </div>
-            <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v">{eur(portfolioValue)}</div></div>
+            <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v">{eurM(portfolioValue)}</div></div>
           </div>
 
           {incomeTotal > 0 && (
@@ -1175,7 +1299,20 @@ export default function App() {
                 <div style={{ width: "100%", height: 210 }}>
                   <ResponsiveContainer>
                     <PieChart>
-                      <Pie data={catTotals} dataKey="value" nameKey="label" innerRadius={52} outerRadius={80} paddingAngle={3} stroke="none">
+                      <Pie
+                        data={catTotals} dataKey="value" nameKey="label"
+                        innerRadius={52} outerRadius={80} paddingAngle={3} stroke="none"
+                        activeIndex={activeCat >= 0 ? activeCat : undefined}
+                        activeShape={(p) => (
+                          <g style={{ filter: "brightness(1.14) saturate(1.05)" }}>
+                            <Sector {...p} outerRadius={p.outerRadius + 7} innerRadius={p.innerRadius - 2} cornerRadius={3} />
+                          </g>
+                        )}
+                        onMouseEnter={(_, idx) => setActiveCat(idx)}
+                        onMouseLeave={() => setActiveCat(-1)}
+                        onClick={(_, idx) => setActiveCat((p) => (p === idx ? -1 : idx))}
+                        isAnimationActive={false}
+                      >
                         {catTotals.map((c) => <Cell key={c.id} fill={c.color} />)}
                       </Pie>
                       <Tooltip
@@ -1195,15 +1332,15 @@ export default function App() {
               <Card>
                 <div className="fc-item">
                   <div className="fc-item-main"><div className="fc-item-title">Gesamtvermögen</div><div className="fc-item-sub">{data.investments.length} Position(en)</div></div>
-                  <div className="fc-item-value">{eur(portfolioValue)}</div>
+                  <div className="fc-item-value">{eurM(portfolioValue)}</div>
                 </div>
                 <div className="fc-item">
                   <div className="fc-item-main"><div className="fc-item-title">Restschulden</div></div>
-                  <div className="fc-item-value" style={{ color: C.error }}>−{eur(creditBalance)}</div>
+                  <div className="fc-item-value" style={{ color: C.error }}>{masked ? MASK : `−${eur(creditBalance)}`}</div>
                 </div>
                 <div className="fc-item">
                   <div className="fc-item-main"><div className="fc-item-title" style={{ fontWeight: 700 }}>Nettovermögen</div></div>
-                  <div className="fc-item-value" style={{ fontWeight: 700 }}>{eur(netWorth)}</div>
+                  <div className="fc-item-value" style={{ fontWeight: 700 }}>{eurM(netWorth)}</div>
                 </div>
               </Card>
             </>
@@ -1459,6 +1596,22 @@ export default function App() {
           <div style={{ fontSize: 12.5, lineHeight: 1.4, color: C.muted, margin: "-6px 0 14px" }}>
             Bestehende Beträge werden nicht umgerechnet – sie gelten in der gewählten Währung.
             Live-Kurse (Aktien &amp; Krypto) werden automatisch in die gewählte Währung umgerechnet.
+          </div>
+          <Field label="App-Sperre (Face ID / Fingerabdruck, Fallback Geräte-PIN)">
+            {settings.lockEnabled ? (
+              <Btn kind="ghost" onClick={() => setSettings({ ...settings, lockEnabled: false, lockCredId: "" })} style={{ gap: 8 }}>
+                <Lock size={15} strokeWidth={1.9} /> Sperre ist aktiv – deaktivieren
+              </Btn>
+            ) : (
+              <Btn kind="ghost" onClick={enableLock} style={{ gap: 8 }}>
+                <Fingerprint size={15} strokeWidth={1.9} /> Sperre einrichten
+              </Btn>
+            )}
+          </Field>
+          <div style={{ fontSize: 12.5, lineHeight: 1.4, color: C.muted, margin: "-6px 0 14px" }}>
+            Schützt die App beim Öffnen. Falls keine Biometrie verfügbar ist, fragt das Gerät automatisch nach PIN/Muster.
+            Hinweis: Die Daten liegen unverschlüsselt im Gerätespeicher – die Sperre schützt vor neugierigen Blicken, nicht gegen forensischen Zugriff.
+            {lockMsg && <div style={{ color: C.error, marginTop: 6 }}>{lockMsg}</div>}
           </div>
           <Field label="Finnhub API-Key (US-Aktien/ETF, kostenlos auf finnhub.io)">
             <input
