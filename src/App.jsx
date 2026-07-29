@@ -2226,6 +2226,9 @@ export default function App() {
     ? activeCat
     : (hoverCat >= 0 && hoverCat < catTotals.length ? hoverCat : -1);
   const shownCatData = shownCat >= 0 ? catTotals[shownCat] : null;
+  const centerVal = masked ? MASK : eurFull(shownCatData ? shownCatData.value : catSum);
+  /* Sehr lange Betraege werden kleiner gesetzt, damit sie nie an den Innenring stossen */
+  const centerValSize = centerVal.length > 13 ? 13 : centerVal.length > 11 ? 14.5 : 16;
 
   /* Verträge, deren Kündigung in den nächsten 60 Tagen fällig wird */
   const dueContracts = useMemo(() => {
@@ -3135,13 +3138,13 @@ export default function App() {
                     {shownCatData ? (
                       <>
                         <div className="lb" title={shownCatData.label}>{shownCatData.label}</div>
-                        <div className="vl">{masked ? MASK : eurFull(shownCatData.value)}</div>
+                        <div className="vl" style={{ fontSize: centerValSize }}>{centerVal}</div>
                         <div className="sh">{catSum > 0 ? `${Math.round((shownCatData.value / catSum) * 100)} %` : ""}</div>
                       </>
                     ) : (
                       <>
                         <div className="lb">Gesamt</div>
-                        <div className="vl">{masked ? MASK : eurFull(catSum)}</div>
+                        <div className="vl" style={{ fontSize: centerValSize }}>{centerVal}</div>
                         <div className="sh">antippen</div>
                       </>
                     )}
