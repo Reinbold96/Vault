@@ -575,6 +575,18 @@ const Field = ({ label, children }) => (
 
 const YearTag = () => <span className="fc-tag">Jährlich</span>;
 
+/* Untertitel aus mehreren kurzen Teilen – mit dezentem Trenner statt Textpunkt */
+const Sub = ({ parts }) => (
+  <>
+    {parts.filter(Boolean).map((p, i) => (
+      <React.Fragment key={i}>
+        {i > 0 && <span className="sep">·</span>}
+        {p}
+      </React.Fragment>
+    ))}
+  </>
+);
+
 const Lead = ({ icon: Ic }) => (
   <span className="fc-lead"><Ic size={18} strokeWidth={1.75} /></span>
 );
@@ -1110,7 +1122,7 @@ function AssetDetail({ group, onAddLot, onEditLot, onDeleteLot, onSell, onDelete
         <div className="fc-detail-row" key={l.id}>
           <div className="m" onClick={() => onEditLot(l)}>
             <div className="t">{fmtQty(l.qty)} {unit} × {eurFull(l.buyPrice || 0)}</div>
-            <div className="s">{l.buyDate ? fmtDay(l.buyDate) : "ohne Kaufdatum"}{l.inChart === false ? " · nicht im Chart" : ""}</div>
+            <div className="s"><Sub parts={[l.buyDate ? fmtDay(l.buyDate) : "ohne Kaufdatum", l.inChart === false ? "nicht im Chart" : null]} /></div>
           </div>
           <div className="r">
             <span className="a">{eur((Number(l.qty) || 0) * (Number(l.buyPrice) || 0))}</span>
@@ -1127,10 +1139,14 @@ function AssetDetail({ group, onAddLot, onEditLot, onDeleteLot, onSell, onDelete
               <div className="m">
                 <div className="t">{fmtQty(s.qty)} {unit} × {eurFull(s.price || 0)}</div>
                 <div className="s">
-                  {fmtDay(s.date)} · realisiert{" "}
-                  <b style={{ color: (realizedById[s.id] || 0) >= 0 ? C.positive : C.error }}>
-                    {(realizedById[s.id] || 0) >= 0 ? "+" : ""}{eurFull(realizedById[s.id] || 0)}
-                  </b>
+                  <Sub parts={[
+                    fmtDay(s.date),
+                    <>realisiert{" "}
+                      <b style={{ color: (realizedById[s.id] || 0) >= 0 ? C.positive : C.error }}>
+                        {(realizedById[s.id] || 0) >= 0 ? "+" : ""}{eurFull(realizedById[s.id] || 0)}
+                      </b>
+                    </>,
+                  ]} />
                 </div>
               </div>
               <div className="r">
@@ -2089,12 +2105,12 @@ export default function App() {
   const monthLabel = new Date().toLocaleDateString("de-DE", { month: "long", year: "numeric" });
   const eurM = (v) => (masked ? MASK : eur(v));
 
-  const ListItem = ({ lead, title, sub, subOneLine, value, valueColor, tag, armed, onEdit, onDelete, note }) => (
+  const ListItem = ({ lead, title, sub, value, valueColor, tag, armed, onEdit, onDelete, note }) => (
     <div className="fc-item">
       {lead}
       <div className="fc-item-main" onClick={onEdit}>
         <div className="fc-item-title">{title}{tag}</div>
-        <div className={`fc-item-sub${subOneLine ? " one" : ""}`}>{sub}</div>
+        <div className="fc-item-sub">{sub}</div>
         {note && <div className="fc-note">{note}</div>}
       </div>
       <div className="fc-item-right">
@@ -2139,8 +2155,8 @@ export default function App() {
         .fc-item:first-child{padding-top:2px;}
         .fc-item-main{flex:1;cursor:pointer;min-width:0;}
         .fc-item-title{font-size:16px;font-weight:600;line-height:1.25;color:${C.ink};}
-        .fc-item-sub{font-size:14px;line-height:1.43;color:${C.muted};margin-top:1px;}
-        .fc-item-sub.one{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-item-sub{font-size:14px;line-height:1.43;color:${C.muted};margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-root .sep{color:${C.borderStrong};padding:0 3px;}
         .fc-inforow{display:flex;align-items:center;gap:8px;margin:-2px 0 0;}
         .fc-info{width:26px;height:26px;border-radius:9999px;border:none;background:${C.strong};color:${C.muted};display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex-shrink:0;}
         .fc-info:active{background:${C.borderStrong};}
@@ -2547,7 +2563,11 @@ export default function App() {
                   lead={<Lead icon={Landmark} />}
                   armed={pendingDelete === c.id}
                   title={c.name}
-                  sub={`Restschuld ${eur(c.balance)}${c.interest ? ` · ${String(c.interest).replace(".", ",")} % p. a.` : ""}${c.paymentDay ? ` · Abbuchung am ${c.paymentDay}.` : ""}${(c.extras || []).length ? ` · ${c.extras.length} Sondertilgung${c.extras.length > 1 ? "en" : ""}` : ""}`}
+                  sub={<Sub parts={[
+                    `Restschuld ${eur(c.balance)}`,
+                    c.interest ? `${String(c.interest).replace(".", ",")} %` : null,
+                    c.paymentDay ? `am ${c.paymentDay}.` : null,
+                  ]} />}
                   value={`${eur(c.rate)}/M.`}
                   onEdit={() => setSheet({ type: "creditDetail", id: c.id })}
                   onDelete={() => remove("credits", c.id)}
@@ -2610,15 +2630,18 @@ export default function App() {
                 const ccy = g.ref.ccy || CUR;
                 const showPct = !isCash && g.cost > 0;
                 const pct = showPct ? (g.unreal / g.cost) * 100 : 0;
-                const sub = isCash
-                  ? (ccy !== CUR ? `${money(cashAmount(g.ref), ccy)} · Kurs ${(fxRates[ccy] || 1).toFixed(4).replace(".", ",")}` : "Cash-Konto")
+                const subParts = isCash
+                  ? (ccy !== CUR ? [money(cashAmount(g.ref), ccy), `Kurs ${(fxRates[ccy] || 1).toFixed(4).replace(".", ",")}`] : ["Cash-Konto"])
                   : g.type === "immobilie"
-                    ? "Immobilie"
+                    ? ["Immobilie"]
                     : g.qty > 0
-                      ? `${fmtQty(g.qty)} ${g.type === "rohstoff" ? unit : "Stk"} · ${eur(g.price)}`
-                        + (g.lots.length > 1 ? ` · ${g.lots.length} Käufe` : "")
-                        + (g.sells.length ? ` · ${g.sells.length} verkauft` : "")
-                      : `verkauft · realisiert ${g.realized >= 0 ? "+" : ""}${eur(g.realized)}`;
+                      ? [
+                          `${fmtQty(g.qty)} ${g.type === "rohstoff" ? unit : "Stk"}`,
+                          eur(g.price),
+                          g.lots.length > 1 ? `${g.lots.length} Käufe` : null,
+                          g.sells.length ? `${g.sells.length} verkauft` : null,
+                        ]
+                      : ["verkauft", `realisiert ${g.realized >= 0 ? "+" : ""}${eur(g.realized)}`];
                 return (
                   <ListItem key={g.gkey}
                     lead={isValue
@@ -2628,8 +2651,7 @@ export default function App() {
                         : <AssetLogo inv={g.ref} />}
                     armed={pendingDelete === g.gkey}
                     title={g.name}
-                    sub={sub}
-                    subOneLine
+                    sub={<Sub parts={subParts} />}
                     value={
                       <span>
                         {eur(g.value)}<br />
@@ -2649,8 +2671,8 @@ export default function App() {
             <Btn kind="ghost" disabled={!data.investments.length || priceStatus.startsWith("Kurse werden")} onClick={refreshPrices}>Kurse aktualisieren</Btn>
           </div>
           <div className="fc-hint">
-            Krypto-Kurse kommen live von CoinGecko (ohne Key). Aktien/ETF-Kurse kommen von Finnhub in USD und werden zum Tageskurs in deine Währung umgerechnet – dafür in den Einstellungen einen kostenlosen Finnhub-Key hinterlegen. US-Ticker sind im Free-Tier am zuverlässigsten.
-            {lastPriceUpdate > 0 && <> · Stand: {new Date(lastPriceUpdate).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</>}
+            Krypto und Edelmetalle laufen ohne Key, Aktien und ETFs über die API-Keys in den Einstellungen.
+            {lastPriceUpdate > 0 && <><br />Kurse aktualisiert: {new Date(lastPriceUpdate).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</>}
           </div>
         </>
       )}
