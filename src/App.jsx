@@ -933,29 +933,47 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
       const fxFilled = {};
       for (const [ccy, s] of Object.entries(fx)) fxFilled[ccy] = fillForward(s, dates);
 
-      const rows = dates.map((d) => {
+      /* Zeitgewichtete Rendite: Zukäufe verzerren die Kurve nicht,
+         dadurch ist der Vergleich mit den Indizes fair. */
+      const rows = [];
+      let twr = 100, prev = null;
+      for (const d of dates) {
         let value = 0, invested = 0, any = false;
+        const px = {};
         for (const i of eligible) {
           if (i.buyDate > d) continue;
           const key = i.type === "krypto" ? `cg:${i.coinId || (i.symbol || "").toUpperCase()}:${cur}` : `td:${(i.symbol || "").toUpperCase()}`;
           const ser = filled[key];
-          const px = ser && ser[d];
-          if (px == null) continue;
+          const raw = ser && ser[d];
+          if (raw == null) continue;
           const h = hist[key];
           const rate = h && h.ccy && h.ccy !== cur ? (fxFilled[h.ccy] && fxFilled[h.ccy][d]) : 1;
           if (rate == null) continue;
-          value += Number(i.qty) * px * rate;
+          const p = raw * rate;
+          px[i.id] = p;
+          value += Number(i.qty) * p;
           invested += Number(i.qty) * (Number(i.buyPrice) || 0);
           any = true;
         }
-        const row = { d, value: any ? value : null, invested: any ? invested : null };
-        row.perf = any && invested > 0 ? (value / invested - 1) * 100 : null;
+        if (!any) continue;
+        if (prev) {
+          let num = 0, den = 0;
+          for (const i of eligible) {
+            const a = prev.px[i.id], b = px[i.id];
+            if (a == null || b == null) continue;
+            num += Number(i.qty) * b;
+            den += Number(i.qty) * a;
+          }
+          if (den > 0) twr *= num / den;
+        }
+        const row = { d, value, invested, gain: value - invested, twr };
         for (const b of activeBms) {
           const ser = filled[`td:${b.sym}`];
           row["bm_" + b.id] = ser && ser[d] != null ? ser[d] : null;
         }
-        return row;
-      }).filter((r) => r.value != null);
+        rows.push(row);
+        prev = { d, px };
+      }
 
       setState({ loading: false, rows, notes, err: rows.length ? "" : "Keine Kursdaten für den Zeitraum gefunden" });
     }
@@ -975,9 +993,9 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
       const f = rows.find((x) => x["bm_" + b.id] != null);
       bmBase[b.id] = f ? f["bm_" + b.id] : null;
     }
-    const perfBase = first.perf;
+    const twrBase = first.twr;
     let out = rows.map((x) => {
-      const o = { d: x.d, value: x.value, perf: x.perf != null && perfBase != null ? x.perf - perfBase : null };
+      const o = { d: x.d, value: x.value, perf: twrBase ? (x.twr / twrBase - 1) * 100 : null };
       for (const b of activeBms) {
         const base = bmBase[b.id];
         o["bm_" + b.id] = base && x["bm_" + b.id] != null ? (x["bm_" + b.id] / base - 1) * 100 : null;
@@ -990,8 +1008,9 @@ function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark
   }, [state.rows, range, bmKey]);
 
   const showPerf = mode === "perf" || activeBms.length > 0;
-  const chg = view.first && view.last ? view.last.value - view.first.value : 0;
-  const chgPct = view.first && view.first.value ? (chg / view.first.value) * 100 : 0;
+  /* Wertänderung ohne Zukäufe (Differenz der Buchgewinne) und zeitgewichtete Rendite */
+  const chg = view.first && view.last ? view.last.gain - view.first.gain : 0;
+  const chgPct = view.first && view.last && view.first.twr ? (view.last.twr / view.first.twr - 1) * 100 : 0;
   const fmtDate = (d) => { const x = new Date(d); return `${String(x.getDate()).padStart(2, "0")}.${String(x.getMonth() + 1).padStart(2, "0")}.${String(x.getFullYear()).slice(2)}`; };
   const compact = (v) => { const a = Math.abs(v); if (a >= 1e6) return (v / 1e6).toFixed(1).replace(".", ",") + " Mio"; if (a >= 1e3) return Math.round(v / 1e3) + "k"; return String(Math.round(v)); };
 
