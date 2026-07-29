@@ -6,7 +6,7 @@ import {
   LayoutGrid, Receipt, TrendingUp, Settings, Download, Upload,
   Heart, Stethoscope, Users, Banknote,
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap,
-  Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown, Check,
+  Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown, Check, Info,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -356,6 +356,15 @@ function payoffPlan(balance, rate, interestPct) {
   }
   return { months, interest, ok: bal <= 0 };
 }
+/* Monate von heute bis zum hinterlegten Tilgungsschluss */
+function monthsUntil(iso) {
+  if (!iso) return null;
+  const end = new Date(iso);
+  if (isNaN(end)) return null;
+  const now = new Date();
+  const m = (end.getFullYear() - now.getFullYear()) * 12 + (end.getMonth() - now.getMonth()) + (end.getDate() >= now.getDate() ? 0 : -1);
+  return Math.max(0, m);
+}
 const monthsLabel = (m) => {
   if (!isFinite(m)) return "läuft nie ab";
   if (m <= 0) return "abbezahlt";
@@ -671,7 +680,7 @@ function ExpenseForm({ initial, kind, onSave }) {
 }
 
 function CreditForm({ initial, onSave }) {
-  const [f, setF] = useState(initial || { name: "", rate: "", balance: "", interest: "", paymentDay: "" });
+  const [f, setF] = useState(initial || { name: "", rate: "", balance: "", interest: "", paymentDay: "", endDate: "" });
   const handleSave = () => {
     const paymentDay = Math.min(31, Math.max(0, Math.round(Number(f.paymentDay) || 0)));
     /* Restschuld gilt ab heute: Buchungen zählen erst ab der nächsten fälligen Abbuchung */
@@ -683,6 +692,7 @@ function CreditForm({ initial, onSave }) {
       rate: Number(f.rate),
       balance: Number(f.balance) || 0,
       interest: Number(f.interest) || 0,
+      endDate: f.endDate || "",
       paymentDay,
       lastAppliedIdx,
     });
@@ -708,8 +718,12 @@ function CreditForm({ initial, onSave }) {
           <input type="number" inputMode="numeric" value={f.paymentDay || ""} onChange={(e) => setF({ ...f, paymentDay: e.target.value })} placeholder="z. B. 1" />
         </Field>
       </div>
+      <Field label="Tilgungsschluss (optional)">
+        <input type="date" value={f.endDate || ""} onChange={(e) => setF({ ...f, endDate: e.target.value })} />
+      </Field>
       <div style={{ margin: "-6px 0 14px", fontSize: 13, lineHeight: 1.35, color: C.muted }}>
         Mit Abbuchungstag reduziert die App die Restschuld automatisch jeden Monat um die Tilgung (Rate minus Zinsanteil, falls Zinssatz angegeben).
+        Mit Tilgungsschluss wird die Restlaufzeit aus deinem Vertragsdatum statt aus der Hochrechnung ermittelt.
       </div>
       <Btn disabled={!f.name || !f.rate} onClick={handleSave}>Speichern</Btn>
     </div>
@@ -793,12 +807,14 @@ function InvestForm({ initial, onSave, finnhubKey }) {
               <input type="number" inputMode="decimal" value={f.buyPrice} onChange={(e) => setF({ ...f, buyPrice: e.target.value })} placeholder="0" />
             </Field>
           </div>
-          <Field label={`Aktueller Kurs (${curSym()}) – wird automatisch gepflegt`}>
-            <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
-          </Field>
-          <Field label="Kaufdatum (optional)">
-            <input type="date" value={f.buyDate || ""} onChange={(e) => setF({ ...f, buyDate: e.target.value })} />
-          </Field>
+          <div className="fc-row2">
+            <Field label="Kaufdatum">
+              <input type="date" value={f.buyDate || ""} onChange={(e) => setF({ ...f, buyDate: e.target.value })} />
+            </Field>
+            <Field label={`Aktueller Kurs (${curSym()})`}>
+              <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
+            </Field>
+          </div>
           <div style={{ fontSize: 13, color: C.muted, margin: "-2px 0 12px", lineHeight: 1.4 }}>
             Edelmetalle werden automatisch aktualisiert (in Unzen). Öl braucht einen Twelve-Data-Key in den Einstellungen.
           </div>
@@ -872,7 +888,7 @@ function InvestForm({ initial, onSave, finnhubKey }) {
             </Field>
           </div>
           <div className="fc-row2">
-            <Field label="Kaufdatum – für den Verlaufs-Chart">
+            <Field label="Kaufdatum">
               <input type="date" value={f.buyDate || ""} onChange={(e) => setF({ ...f, buyDate: e.target.value })} />
             </Field>
             <Field label={`Aktueller Kurs (${curSym()})`}>
@@ -944,6 +960,7 @@ function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit }) {
   const [armed, setArmed] = useState(null);
   const bal = Number(credit.balance) || 0;
   const plan = payoffPlan(bal, credit.rate, credit.interest);
+  const termMonths = monthsUntil(credit.endDate);
   const extras = [...(credit.extras || [])].sort((a, b) => (b.d || "").localeCompare(a.d || ""));
   const extraSum = extras.reduce((s, e) => s + (Number(e.amt) || 0), 0);
   const del = (id) => { if (armed !== id) { setArmed(id); setTimeout(() => setArmed((p) => (p === id ? null : p)), 3500); return; } setArmed(null); onDeleteExtra(id); };
@@ -954,7 +971,11 @@ function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit }) {
         <div><span className="l">Restschuld</span><span className="v">{eur(bal)}</span></div>
         <div><span className="l">Monatsrate</span><span className="v">{eur(credit.rate)}</span></div>
         <div><span className="l">Zinssatz</span><span className="v">{credit.interest ? `${String(credit.interest).replace(".", ",")} %` : "–"}</span></div>
-        <div><span className="l">Restlaufzeit</span><span className="v">{monthsLabel(plan.months)}</span></div>
+        <div>
+          <span className="l">Restlaufzeit{termMonths != null ? " (Vertrag)" : " (rechnerisch)"}</span>
+          <span className="v">{monthsLabel(termMonths != null ? termMonths : plan.months)}</span>
+          {credit.endDate && <span className="l" style={{ marginTop: 1 }}>bis {fmtDay(credit.endDate)}</span>}
+        </div>
         {isFinite(plan.interest) && plan.interest > 0 && (
           <div><span className="l">Zinsen bis Ende</span><span className="v">{eur(plan.interest)}</span></div>
         )}
@@ -988,6 +1009,7 @@ function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit }) {
         {credit.paymentDay
           ? `Die Monatsrate wird am ${credit.paymentDay}. automatisch verbucht${credit.interest ? " – der Zinsanteil wird dabei abgezogen" : ""}.`
           : "Ohne Abbuchungstag bleibt die Restschuld unverändert – trage ihn beim Bearbeiten nach, dann tilgt die App automatisch."}
+        {termMonths == null && " Trage einen Tilgungsschluss ein, dann kommt die Restlaufzeit aus deinem Vertrag statt aus der Hochrechnung."}
         {extras.length > 0 && " Beim Löschen einer Sondertilgung wird der Betrag der Restschuld wieder zugerechnet."}
       </div>
     </div>
@@ -1162,6 +1184,7 @@ function CashflowBar({ catTotals, creditRate, surplus, savings = 0, budgetFree =
 
 /* ---------- Prognose (Zinseszins) ---------- */
 function ForecastView({ surplus, startValue }) {
+  const [info, setInfo] = useState(false);
   const [ratePct, setRatePct] = useState("5");
   const [contrib, setContrib] = useState(String(Math.max(0, Math.round(surplus || 0))));
   const P = Math.max(0, startValue || 0);
@@ -1194,10 +1217,19 @@ function ForecastView({ surplus, startValue }) {
           <input type="number" inputMode="decimal" value={contrib} onChange={(e) => setContrib(e.target.value)} placeholder="0" />
         </Field>
       </div>
-      <div style={{ fontSize: 13, color: C.muted, margin: "-2px 0 12px", lineHeight: 1.4 }}>
-        Startwert ist dein heutiges Nettovermögen ({eur(P)}), verzinst mit Zinseszins (monatlich). X-Achse logarithmisch – links Monate, rechts bis 40 Jahre.
+      <div className="fc-inforow">
+        <button type="button" className="fc-info" onClick={() => setInfo((v) => !v)} aria-expanded={info} aria-label="Erklärung zur Prognose">
+          <Info size={15} strokeWidth={2} />
+        </button>
+        <span className="fc-infolbl" onClick={() => setInfo((v) => !v)}>Wie wird gerechnet?</span>
       </div>
-      <div style={{ width: "100%", height: 240 }}>
+      {info && (
+        <div style={{ fontSize: 13, color: C.muted, margin: "8px 0 12px", lineHeight: 1.45 }}>
+          Startwert ist dein heutiges Nettovermögen ({eur(P)}), verzinst mit Zinseszins (monatlich).
+          X-Achse logarithmisch – links Monate, rechts bis 40 Jahre.
+        </div>
+      )}
+      <div style={{ width: "100%", height: 240, marginTop: info ? 0 : 8 }}>
         <ResponsiveContainer>
           <LineChart data={series} margin={{ top: 8, right: 14, bottom: 2, left: 2 }}>
             <XAxis dataKey="m" type="number" scale="log" domain={[1, 480]} ticks={xTicks} tickFormatter={xFmt} tick={{ fontSize: 11, fill: C.muted }} stroke={C.hairline} />
@@ -1206,6 +1238,8 @@ function ForecastView({ surplus, startValue }) {
               formatter={(v) => [eurFull(v), "Vermögen"]}
               labelFormatter={(m) => (m < 12 ? `${m} Monate` : `${(m / 12).toFixed(m % 12 ? 1 : 0).replace(".", ",")} Jahre`)}
               contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 13, boxShadow: SHADOW }}
+              labelStyle={{ color: C.muted }}
+              itemStyle={{ color: C.ink }}
             />
             <Line type="monotone" dataKey="value" stroke={C.rausch} strokeWidth={2.5} dot={false} />
           </LineChart>
@@ -1438,7 +1472,22 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
   const chg = view.first && view.last ? (view.last.gain - view.first.gain) + realizedWin : 0;
   const chgPct = view.first && view.last && view.first.twr ? (view.last.twr / view.first.twr - 1) * 100 : 0;
   const fmtDate = (d) => { const x = new Date(d); return `${String(x.getDate()).padStart(2, "0")}.${String(x.getMonth() + 1).padStart(2, "0")}.${String(x.getFullYear()).slice(2)}`; };
-  const compact = (v) => { const a = Math.abs(v); if (a >= 1e6) return (v / 1e6).toFixed(1).replace(".", ",") + " Mio"; if (a >= 1e3) return Math.round(v / 1e3) + "k"; return String(Math.round(v)); };
+  /* Achsenbeschriftung so genau, dass keine zwei Ticks gleich aussehen:
+     die Genauigkeit richtet sich nach der Spannweite der Werte im Zeitraum. */
+  const span = useMemo(() => {
+    if (!view.rows.length) return 0;
+    const vals = view.rows.map((x) => x.value).filter((v) => v != null);
+    return vals.length ? Math.max(...vals) - Math.min(...vals) : 0;
+  }, [view.rows]);
+  const nf = (v, dec) => v.toLocaleString(CUR === "CHF" ? "de-CH" : "de-DE", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  const axisVal = (v) => {
+    const a = Math.abs(v);
+    if (span >= 2e6) return nf(v / 1e6, 1) + " Mio";
+    if (span >= 2e5) return nf(v / 1e3, 0) + "k";
+    if (span >= 2e4) return nf(v / 1e3, 1) + "k";
+    if (a >= 1e6) return nf(v / 1e6, 2) + " Mio";
+    return nf(Math.round(v), 0);
+  };
 
   return (
     <Card style={{ paddingBottom: 12 }}>
@@ -1473,11 +1522,13 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
             <LineChart data={view.rows} margin={{ top: 6, right: 10, bottom: 0, left: 0 }}>
               <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
               <XAxis dataKey="d" tickFormatter={fmtDate} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={38} />
-              <YAxis domain={["auto", "auto"]} tickFormatter={(v) => (showPerf ? `${Math.round(v)} %` : compact(v))} width={showPerf ? 42 : 46} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} />
+              <YAxis domain={["auto", "auto"]} allowDecimals={false} tickFormatter={(v) => (showPerf ? `${Math.round(v)} %` : axisVal(v))} width={showPerf ? 46 : 58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} />
               <Tooltip
                 labelFormatter={fmtDate}
                 formatter={(v, n) => [showPerf ? `${Number(v).toFixed(1).replace(".", ",")} %` : eurFull(v), n]}
                 contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 12.5, boxShadow: SHADOW }}
+                labelStyle={{ color: C.muted }}
+                itemStyle={{ color: C.ink }}
               />
               <Line type="monotone" dataKey={showPerf ? "perf" : "value"} name="Portfolio" stroke={C.rausch} strokeWidth={2.4} dot={false} connectNulls />
               {showPerf && activeBms.map((b) => (
@@ -2025,12 +2076,12 @@ export default function App() {
   const monthLabel = new Date().toLocaleDateString("de-DE", { month: "long", year: "numeric" });
   const eurM = (v) => (masked ? MASK : eur(v));
 
-  const ListItem = ({ lead, title, sub, value, valueColor, tag, armed, onEdit, onDelete, note }) => (
+  const ListItem = ({ lead, title, sub, subOneLine, value, valueColor, tag, armed, onEdit, onDelete, note }) => (
     <div className="fc-item">
       {lead}
       <div className="fc-item-main" onClick={onEdit}>
         <div className="fc-item-title">{title}{tag}</div>
-        <div className="fc-item-sub">{sub}</div>
+        <div className={`fc-item-sub${subOneLine ? " one" : ""}`}>{sub}</div>
         {note && <div className="fc-note">{note}</div>}
       </div>
       <div className="fc-item-right">
@@ -2076,6 +2127,12 @@ export default function App() {
         .fc-item-main{flex:1;cursor:pointer;min-width:0;}
         .fc-item-title{font-size:16px;font-weight:600;line-height:1.25;color:${C.ink};}
         .fc-item-sub{font-size:14px;line-height:1.43;color:${C.muted};margin-top:1px;}
+        .fc-item-sub.one{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-row2 .fc-field span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .fc-inforow{display:flex;align-items:center;gap:8px;margin:-2px 0 0;}
+        .fc-info{width:26px;height:26px;border-radius:9999px;border:none;background:${C.strong};color:${C.muted};display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex-shrink:0;}
+        .fc-info:active{background:${C.borderStrong};}
+        .fc-infolbl{font-size:13px;color:${C.mutedSoft};cursor:pointer;}
         .fc-item-right{display:flex;align-items:center;gap:12px;}
         .fc-item-value{font-size:16px;font-weight:600;line-height:1.25;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;}
         .fc-del{width:32px;height:32px;border-radius:9999px;border:none;background:${C.strong};color:${C.ink};font-size:16px;line-height:1;cursor:pointer;flex-shrink:0;}
@@ -2291,6 +2348,8 @@ export default function App() {
                       <Tooltip
                         formatter={(v, n) => [eurFull(v), n]}
                         contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 14, boxShadow: SHADOW }}
+                        labelStyle={{ color: C.muted }}
+                        itemStyle={{ color: C.ink }}
                       />
                     </PieChart>
                   </ResponsiveContainer>
@@ -2544,10 +2603,10 @@ export default function App() {
                   : g.type === "immobilie"
                     ? "Immobilie"
                     : g.qty > 0
-                      ? `${fmtQty(g.qty)} ${unit} · Kurs ${eurFull(g.price)}`
+                      ? `${fmtQty(g.qty)} ${g.type === "rohstoff" ? unit : "Stk"} · ${eur(g.price)}`
                         + (g.lots.length > 1 ? ` · ${g.lots.length} Käufe` : "")
                         + (g.sells.length ? ` · ${g.sells.length} verkauft` : "")
-                      : `verkauft · realisiert ${g.realized >= 0 ? "+" : ""}${eurFull(g.realized)}`;
+                      : `verkauft · realisiert ${g.realized >= 0 ? "+" : ""}${eur(g.realized)}`;
                 return (
                   <ListItem key={g.gkey}
                     lead={isValue
@@ -2558,6 +2617,7 @@ export default function App() {
                     armed={pendingDelete === g.gkey}
                     title={g.name}
                     sub={sub}
+                    subOneLine
                     value={
                       <span>
                         {eur(g.value)}<br />
