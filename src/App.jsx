@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAxis, YAxis, Sector } from "recharts";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAxis, YAxis, Sector, CartesianGrid } from "recharts";
 import {
   Shield, Home, Car, Repeat, ShoppingCart, MoreHorizontal,
   Wallet, Baby, HeartHandshake, Coins, Landmark,
   LayoutGrid, Receipt, TrendingUp, Settings, Download, Upload,
   Heart, Stethoscope, Users, Banknote,
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap,
-  Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown,
+  Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown, Check,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -241,6 +241,78 @@ async function bioVerify(credId) {
   if (credId) pk.allowCredentials = [{ type: "public-key", id: b64d(credId), transports: ["internal"] }];
   const res = await navigator.credentials.get({ publicKey: pk });
   return !!res;
+}
+
+/* ---------- Kurshistorie: Quellen, Cache, Hilfsfunktionen ---------- */
+/* Indizes sind bei Twelve Data kostenpflichtig – wir nutzen liquide ETF-Stellvertreter. */
+const BENCHMARKS = [
+  { id: "sp500", label: "S&P 500", sym: "SPY", color: "#4a96eb" },
+  { id: "nasdaq", label: "Nasdaq 100", sym: "QQQ", color: "#b598ff" },
+  { id: "world", label: "Welt", sym: "URTH", color: "#f0a83a" },
+  { id: "dax", label: "Deutschland", sym: "EWG", color: "#45c98a" },
+];
+/* Typen, für die es kostenlose Kurshistorie gibt */
+const HIST_TYPES = ["aktie", "etf", "krypto"];
+const HIST_KEY = "vault_hist_v1";
+const CRYPTO_MAX_DAYS = 365; /* CoinGecko-Gratislimit */
+
+const isoDay = (d) => new Date(d).toISOString().slice(0, 10);
+const todayIso = () => isoDay(Date.now());
+const addDays = (iso, n) => isoDay(new Date(iso).getTime() + n * 86400000);
+function daysBetween(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
+function eachDay(startIso, endIso) {
+  const out = [];
+  for (let t = new Date(startIso).getTime(), e = new Date(endIso).getTime(); t <= e; t += 86400000) out.push(isoDay(t));
+  return out;
+}
+function loadHist() { try { return JSON.parse(localStorage.getItem(HIST_KEY) || "{}"); } catch { return {}; } }
+function saveHist(h) { try { localStorage.setItem(HIST_KEY, JSON.stringify(h)); } catch { /* Speicher voll */ } }
+
+/* Aktien/ETFs: Twelve Data (Tageswerte, Originalwährung) */
+async function fetchStockHistory(sym, key, startIso) {
+  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(sym)}&interval=1day&start_date=${startIso}&outputsize=5000&apikey=${key}`;
+  const j = await fetch(url).then((r) => r.json());
+  if (!j || !Array.isArray(j.values)) {
+    const msg = (j && j.message) || "";
+    if (/Grow|Venture|Pro plan/i.test(msg)) throw new Error("PLAN");
+    if (j && j.code === 429) throw new Error("LIMIT");
+    throw new Error("NODATA");
+  }
+  const series = {};
+  for (const v of j.values) series[v.datetime] = Number(v.close);
+  return { ccy: (j.meta && j.meta.currency) || "USD", series };
+}
+
+/* Krypto: CoinGecko (direkt in Zielwährung, max. 365 Tage gratis) */
+async function fetchCryptoHistory(coinId, cur, days) {
+  const d = Math.min(Math.max(days, 2), CRYPTO_MAX_DAYS);
+  const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(coinId)}/market_chart?vs_currency=${cur.toLowerCase()}&days=${d}&interval=daily`;
+  const j = await fetch(url).then((r) => r.json());
+  if (!j || !Array.isArray(j.prices)) throw new Error("NODATA");
+  const series = {};
+  for (const [ts, p] of j.prices) series[isoDay(ts)] = Number(p);
+  return { ccy: cur, series };
+}
+
+/* Historische Wechselkurse (ein Request für den ganzen Zeitraum) */
+async function fetchFxSeries(from, to, startIso) {
+  if (from === to) return null;
+  const j = await fetch(`https://api.frankfurter.dev/v1/${startIso}..?base=${from}&symbols=${to}`).then((r) => r.json());
+  if (!j || !j.rates) throw new Error("NOFX");
+  const series = {};
+  for (const [d, o] of Object.entries(j.rates)) series[d] = o[to];
+  return series;
+}
+
+/* Serie auf einen Tagesraster legen und Lücken (Wochenenden) fortschreiben */
+function fillForward(series, dates) {
+  const out = {};
+  let last = null;
+  for (const d of dates) {
+    if (series[d] != null) last = series[d];
+    if (last != null) out[d] = last;
+  }
+  return out;
 }
 
 const monthly = (item) =>
@@ -479,7 +551,7 @@ function CreditForm({ initial, onSave }) {
 }
 
 function InvestForm({ initial, onSave, finnhubKey }) {
-  const [f, setF] = useState(initial || { name: "", symbol: "", type: "etf", qty: "", buyPrice: "", price: "", logoUrl: "" });
+  const [f, setF] = useState(initial || { name: "", symbol: "", type: "etf", qty: "", buyPrice: "", price: "", logoUrl: "", buyDate: "", inChart: true });
   const [looking, setLooking] = useState(false);
   const [lookupMsg, setLookupMsg] = useState("");
 
@@ -558,12 +630,15 @@ function InvestForm({ initial, onSave, finnhubKey }) {
           <Field label={`Aktueller Kurs (${curSym()}) – wird automatisch gepflegt`}>
             <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
           </Field>
+          <Field label="Kaufdatum (optional)">
+            <input type="date" value={f.buyDate || ""} onChange={(e) => setF({ ...f, buyDate: e.target.value })} />
+          </Field>
           <div style={{ fontSize: 13, color: C.muted, margin: "-2px 0 12px", lineHeight: 1.4 }}>
             Edelmetalle werden automatisch aktualisiert (in Unzen). Öl braucht einen Twelve-Data-Key in den Einstellungen.
           </div>
           <Btn
             disabled={!f.qty}
-            onClick={() => { const c = COMMODITIES.find((x) => x.id === (f.commodity || "gold")); onSave({ ...f, commodity: c.id, name: f.name || c.label, unit: c.unit, symbol: c.id, qty: Number(f.qty), buyPrice: Number(f.buyPrice) || 0, price: Number(f.price) || Number(f.buyPrice) || 0 }); }}
+            onClick={() => { const c = COMMODITIES.find((x) => x.id === (f.commodity || "gold")); onSave({ ...f, commodity: c.id, name: f.name || c.label, unit: c.unit, symbol: c.id, inChart: false, qty: Number(f.qty), buyPrice: Number(f.buyPrice) || 0, price: Number(f.price) || Number(f.buyPrice) || 0 }); }}
           >Speichern</Btn>
         </>
       ) : isValueType ? (
@@ -579,6 +654,10 @@ function InvestForm({ initial, onSave, finnhubKey }) {
               <input type="number" inputMode="decimal" value={f.buyPrice} onChange={(e) => setF({ ...f, buyPrice: e.target.value })} placeholder="0" />
             </Field>
           )}
+          <button type="button" className="fc-check" onClick={() => setF({ ...f, inChart: f.inChart === false })}>
+            <span className={`box ${f.inChart !== false ? "on" : ""}`}>{f.inChart !== false && <Check size={13} strokeWidth={3} />}</span>
+            <span>Im Verlaufs-Chart anzeigen (nur mit Kurshistorie möglich)</span>
+          </button>
           <Btn
             disabled={!f.name || !f.price}
             onClick={() => onSave({ ...f, symbol: "", qty: 1, price: Number(f.price) || 0, buyPrice: Number(f.buyPrice) || Number(f.price) || 0 })}
@@ -612,12 +691,21 @@ function InvestForm({ initial, onSave, finnhubKey }) {
               <input type="number" inputMode="decimal" value={f.buyPrice} onChange={(e) => setF({ ...f, buyPrice: e.target.value })} placeholder="0" />
             </Field>
           </div>
-          <Field label={`Aktueller Kurs (${curSym()}) – wird per Kurs-Update automatisch gepflegt`}>
-            <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
-          </Field>
+          <div className="fc-row2">
+            <Field label="Kaufdatum – für den Verlaufs-Chart">
+              <input type="date" value={f.buyDate || ""} onChange={(e) => setF({ ...f, buyDate: e.target.value })} />
+            </Field>
+            <Field label={`Aktueller Kurs (${curSym()})`}>
+              <input type="number" inputMode="decimal" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} placeholder="0" />
+            </Field>
+          </div>
           <Field label="Logo-URL (optional, falls kein Logo gefunden wird)">
             <input value={f.logoUrl || ""} onChange={(e) => setF({ ...f, logoUrl: e.target.value })} placeholder="https://…" />
           </Field>
+          <button type="button" className="fc-check" onClick={() => setF({ ...f, inChart: f.inChart === false })}>
+            <span className={`box ${f.inChart !== false ? "on" : ""}`}>{f.inChart !== false && <Check size={13} strokeWidth={3} />}</span>
+            <span>Im Verlaufs-Chart anzeigen</span>
+          </button>
           <Btn
             disabled={!sym || !f.qty || looking}
             onClick={() => onSave({ ...f, name: f.name || sym, symbol: sym, qty: Number(f.qty), buyPrice: Number(f.buyPrice) || 0, price: Number(f.price) || Number(f.buyPrice) || 0 })}
@@ -742,10 +830,245 @@ function ForecastView({ surplus, startValue }) {
   );
 }
 
+/* ---------- Portfolio-Wertentwicklung ---------- */
+const RANGES = [
+  { id: "1M", label: "1M", days: 30 },
+  { id: "6M", label: "6M", days: 182 },
+  { id: "1J", label: "1J", days: 365 },
+  { id: "MAX", label: "Max", days: 0 },
+];
+
+function PortfolioChart({ investments, cur, tdKey, benchmarks, onToggleBenchmark }) {
+  const [range, setRange] = useState("6M");
+  const [mode, setMode] = useState("value");
+  const [state, setState] = useState({ loading: false, rows: [], notes: [], err: "" });
+
+  /* Positionen mit Historie, Kaufdatum und Chart-Häkchen */
+  const eligible = useMemo(() => investments.filter((i) =>
+    HIST_TYPES.includes(i.type) && i.inChart !== false && i.buyDate && Number(i.qty) > 0 && (i.symbol || i.coinId)
+  ), [investments]);
+  const skipped = useMemo(() => investments.filter((i) =>
+    i.inChart !== false && !eligible.includes(i) && Number(i.qty) > 0
+  ), [investments, eligible]);
+
+  const activeBms = BENCHMARKS.filter((b) => benchmarks.includes(b.id));
+  const eligKey = eligible.map((i) => `${i.symbol}|${i.qty}|${i.buyDate}`).join(",");
+  const bmKey = benchmarks.join(",");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function build() {
+      if (!eligible.length) { setState({ loading: false, rows: [], notes: [], err: "" }); return; }
+      setState((s) => ({ ...s, loading: true, err: "" }));
+      const notes = [];
+      const hist = loadHist();
+      const today = todayIso();
+      const earliest = eligible.map((i) => i.buyDate).sort()[0];
+      const startAll = earliest < addDays(today, -1825) ? addDays(today, -1825) : earliest;
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      /* --- benötigte Serien laden (Tages-Cache) --- */
+      const need = [];
+      for (const i of eligible) {
+        if (i.type === "krypto") need.push({ key: `cg:${i.coinId || (i.symbol || "").toUpperCase()}:${cur}`, kind: "crypto", i });
+        else need.push({ key: `td:${(i.symbol || "").toUpperCase()}`, kind: "stock", sym: (i.symbol || "").toUpperCase() });
+      }
+      for (const b of activeBms) need.push({ key: `td:${b.sym}`, kind: "stock", sym: b.sym, bm: b });
+
+      const uniq = [];
+      const seen = new Set();
+      for (const n of need) { if (!seen.has(n.key)) { seen.add(n.key); uniq.push(n); } }
+
+      let planBlocked = [], limitHit = false;
+      for (const n of uniq) {
+        const c = hist[n.key];
+        if (c && c.fetched === today && c.series) continue;
+        try {
+          if (n.kind === "crypto") {
+            const coinId = n.i.coinId || CRYPTO_IDS[(n.i.symbol || "").toUpperCase()];
+            if (!coinId) { notes.push(`${n.i.name}: keine Krypto-ID`); continue; }
+            const days = Math.min(CRYPTO_MAX_DAYS, Math.max(2, daysBetween(startAll, today) + 1));
+            const r = await fetchCryptoHistory(coinId, cur, days);
+            hist[n.key] = { fetched: today, ccy: r.ccy, series: r.series };
+            await sleep(400);
+          } else {
+            if (!tdKey) { notes.push("Für Kurshistorie von Aktien/ETFs den Twelve-Data-Key in den Einstellungen eintragen"); continue; }
+            const r = await fetchStockHistory(n.sym, tdKey, startAll);
+            hist[n.key] = { fetched: today, ccy: r.ccy, series: r.series };
+            await sleep(900); /* 8 Anfragen/Min schonen */
+          }
+        } catch (e) {
+          if (String(e.message) === "PLAN") planBlocked.push(n.sym || n.key);
+          else if (String(e.message) === "LIMIT") { limitHit = true; break; }
+          else notes.push(`${n.sym || (n.i && n.i.name)}: keine Historie`);
+        }
+      }
+      saveHist(hist);
+      if (planBlocked.length) notes.push(`Nicht im Gratis-Tarif: ${[...new Set(planBlocked)].join(", ")}`);
+      if (limitHit) notes.push("Datenlimit erreicht – in 1 Minute erneut öffnen");
+      if (cancelled) return;
+
+      /* --- Wechselkurse für Fremdwährungen --- */
+      const needFx = new Set();
+      for (const n of uniq) { const h = hist[n.key]; if (h && h.ccy && h.ccy !== cur) needFx.add(h.ccy); }
+      const fx = {};
+      for (const ccy of needFx) {
+        const fxKey = `fx:${ccy}:${cur}`;
+        if (hist[fxKey] && hist[fxKey].fetched === today) { fx[ccy] = hist[fxKey].series; continue; }
+        try {
+          const s = await fetchFxSeries(ccy, cur, startAll);
+          if (s) { fx[ccy] = s; hist[fxKey] = { fetched: today, series: s }; }
+        } catch { notes.push(`Wechselkurs ${ccy}→${cur} nicht verfügbar`); }
+      }
+      saveHist(hist);
+      if (cancelled) return;
+
+      /* --- Zeitachse & Serien zusammensetzen --- */
+      const dates = eachDay(startAll, today);
+      const filled = {};
+      for (const n of uniq) {
+        const h = hist[n.key];
+        if (h && h.series) filled[n.key] = fillForward(h.series, dates);
+      }
+      const fxFilled = {};
+      for (const [ccy, s] of Object.entries(fx)) fxFilled[ccy] = fillForward(s, dates);
+
+      const rows = dates.map((d) => {
+        let value = 0, invested = 0, any = false;
+        for (const i of eligible) {
+          if (i.buyDate > d) continue;
+          const key = i.type === "krypto" ? `cg:${i.coinId || (i.symbol || "").toUpperCase()}:${cur}` : `td:${(i.symbol || "").toUpperCase()}`;
+          const ser = filled[key];
+          const px = ser && ser[d];
+          if (px == null) continue;
+          const h = hist[key];
+          const rate = h && h.ccy && h.ccy !== cur ? (fxFilled[h.ccy] && fxFilled[h.ccy][d]) : 1;
+          if (rate == null) continue;
+          value += Number(i.qty) * px * rate;
+          invested += Number(i.qty) * (Number(i.buyPrice) || 0);
+          any = true;
+        }
+        const row = { d, value: any ? value : null, invested: any ? invested : null };
+        row.perf = any && invested > 0 ? (value / invested - 1) * 100 : null;
+        for (const b of activeBms) {
+          const ser = filled[`td:${b.sym}`];
+          row["bm_" + b.id] = ser && ser[d] != null ? ser[d] : null;
+        }
+        return row;
+      }).filter((r) => r.value != null);
+
+      setState({ loading: false, rows, notes, err: rows.length ? "" : "Keine Kursdaten für den Zeitraum gefunden" });
+    }
+    build();
+    return () => { cancelled = true; };
+  }, [eligKey, bmKey, cur, tdKey]);
+
+  /* --- Zeitraum zuschneiden, Benchmarks auf Startpunkt normalisieren --- */
+  const view = useMemo(() => {
+    const r = RANGES.find((x) => x.id === range) || RANGES[1];
+    let rows = state.rows;
+    if (r.days) { const from = addDays(todayIso(), -r.days); rows = rows.filter((x) => x.d >= from); }
+    if (!rows.length) return { rows: [], first: null, last: null };
+    const first = rows[0], last = rows[rows.length - 1];
+    const bmBase = {};
+    for (const b of activeBms) {
+      const f = rows.find((x) => x["bm_" + b.id] != null);
+      bmBase[b.id] = f ? f["bm_" + b.id] : null;
+    }
+    const perfBase = first.perf;
+    let out = rows.map((x) => {
+      const o = { d: x.d, value: x.value, perf: x.perf != null && perfBase != null ? x.perf - perfBase : null };
+      for (const b of activeBms) {
+        const base = bmBase[b.id];
+        o["bm_" + b.id] = base && x["bm_" + b.id] != null ? (x["bm_" + b.id] / base - 1) * 100 : null;
+      }
+      return o;
+    });
+    /* für flüssiges Rendern ausdünnen */
+    if (out.length > 400) { const step = Math.ceil(out.length / 400); out = out.filter((_, idx) => idx % step === 0 || idx === out.length - 1); }
+    return { rows: out, first, last };
+  }, [state.rows, range, bmKey]);
+
+  const showPerf = mode === "perf" || activeBms.length > 0;
+  const chg = view.first && view.last ? view.last.value - view.first.value : 0;
+  const chgPct = view.first && view.first.value ? (chg / view.first.value) * 100 : 0;
+  const fmtDate = (d) => { const x = new Date(d); return `${String(x.getDate()).padStart(2, "0")}.${String(x.getMonth() + 1).padStart(2, "0")}.${String(x.getFullYear()).slice(2)}`; };
+  const compact = (v) => { const a = Math.abs(v); if (a >= 1e6) return (v / 1e6).toFixed(1).replace(".", ",") + " Mio"; if (a >= 1e3) return Math.round(v / 1e3) + "k"; return String(Math.round(v)); };
+
+  return (
+    <Card style={{ paddingBottom: 12 }}>
+      <div className="fc-chart-head">
+        <div>
+          <div className="lbl">Wertentwicklung</div>
+          <div className="val">{view.last ? eur(view.last.value) : "–"}</div>
+          {view.first && view.last && (
+            <div className="chg" style={{ color: chg >= 0 ? C.positive : C.error }}>
+              {chg >= 0 ? "+" : ""}{eur(chg)} · {chg >= 0 ? "+" : ""}{chgPct.toFixed(1).replace(".", ",")} %
+            </div>
+          )}
+        </div>
+        <div className="fc-chart-modes">
+          <button className={!showPerf ? "active" : ""} onClick={() => setMode("value")} disabled={activeBms.length > 0}>Wert</button>
+          <button className={showPerf ? "active" : ""} onClick={() => setMode("perf")}>%</button>
+        </div>
+      </div>
+
+      <div className="fc-ranges">
+        {RANGES.map((r) => (
+          <button key={r.id} className={range === r.id ? "active" : ""} onClick={() => setRange(r.id)}>{r.label}</button>
+        ))}
+      </div>
+
+      <div style={{ width: "100%", height: 220, marginTop: 6 }}>
+        {state.loading ? (
+          <div className="fc-chart-empty">Kursverlauf wird geladen …</div>
+        ) : view.rows.length < 2 ? (
+          <div className="fc-chart-empty">{state.err || "Noch keine Daten – Kaufdatum bei den Positionen eintragen."}</div>
+        ) : (
+          <ResponsiveContainer>
+            <LineChart data={view.rows} margin={{ top: 6, right: 10, bottom: 0, left: 0 }}>
+              <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
+              <XAxis dataKey="d" tickFormatter={fmtDate} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={38} />
+              <YAxis tickFormatter={(v) => (showPerf ? `${Math.round(v)} %` : compact(v))} width={showPerf ? 42 : 46} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} />
+              <Tooltip
+                labelFormatter={fmtDate}
+                formatter={(v, n) => [showPerf ? `${Number(v).toFixed(1).replace(".", ",")} %` : eurFull(v), n]}
+                contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 12.5, boxShadow: SHADOW }}
+              />
+              <Line type="monotone" dataKey={showPerf ? "perf" : "value"} name="Portfolio" stroke={C.rausch} strokeWidth={2.4} dot={false} connectNulls />
+              {showPerf && activeBms.map((b) => (
+                <Line key={b.id} type="monotone" dataKey={"bm_" + b.id} name={b.label} stroke={b.color} strokeWidth={1.7} dot={false} connectNulls strokeDasharray="4 3" />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
+      <div className="fc-bmrow">
+        {BENCHMARKS.map((b) => {
+          const on = benchmarks.includes(b.id);
+          return (
+            <button key={b.id} className={`fc-bm ${on ? "on" : ""}`} onClick={() => onToggleBenchmark(b.id)} style={on ? { borderColor: b.color, color: b.color } : undefined}>
+              <span className="dot" style={{ background: on ? b.color : C.borderStrong }} />{b.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {(skipped.length > 0 || state.notes.length > 0) && (
+        <div className="fc-chart-note">
+          {skipped.length > 0 && <div>Nicht im Chart: {skipped.map((s) => s.name).join(", ")} (kein Kaufdatum oder keine Historie verfügbar)</div>}
+          {state.notes.slice(0, 3).map((n, i) => <div key={i}>{n}</div>)}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /* ---------- Haupt-App ---------- */
 export default function App() {
   const [data, setData] = useState(() => loadLS(DATA_KEY, EMPTY));
-  const [settings, setSettings] = useState(() => loadLS(SETTINGS_KEY, { finnhubKey: "", currency: "EUR", theme: "system", tdKey: "", calcMode: "surplus" }));
+  const [settings, setSettings] = useState(() => loadLS(SETTINGS_KEY, { finnhubKey: "", currency: "EUR", theme: "system", tdKey: "", calcMode: "surplus", chartBenchmarks: ["sp500"] }));
   CUR = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
   const [tab, setTab] = useState("home");
   const [costView, setCostView] = useState("fix");
@@ -1257,6 +1580,25 @@ export default function App() {
         .fc-lock-inner .txt{font-size:14px;line-height:1.45;color:${C.muted};margin-bottom:20px;}
         .fc-lock-inner .err{font-size:13px;color:${C.error};margin-top:12px;}
         .fc-lock-alt{margin-top:14px;background:none;border:none;color:${C.mutedSoft};font-size:13px;text-decoration:underline;cursor:pointer;font-family:inherit;}
+        .fc-chart-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;}
+        .fc-chart-head .lbl{font-size:13px;color:${C.muted};}
+        .fc-chart-head .val{font-size:26px;font-weight:700;letter-spacing:-0.4px;font-variant-numeric:tabular-nums;color:${C.ink};margin-top:1px;}
+        .fc-chart-head .chg{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px;}
+        .fc-chart-modes{display:flex;background:${C.soft};border-radius:9999px;padding:3px;gap:2px;flex-shrink:0;}
+        .fc-chart-modes button{border:none;background:transparent;color:${C.muted};font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:9999px;cursor:pointer;font-family:inherit;}
+        .fc-chart-modes button.active{background:${C.canvas};color:${C.ink};box-shadow:${SHADOW};}
+        .fc-chart-modes button:disabled{opacity:.45;cursor:not-allowed;}
+        .fc-ranges{display:flex;gap:6px;margin-top:12px;}
+        .fc-ranges button{flex:1;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12.5px;font-weight:600;padding:6px 0;border-radius:9999px;cursor:pointer;font-family:inherit;}
+        .fc-ranges button.active{background:${C.strong};color:${C.ink};border-color:${C.borderStrong};}
+        .fc-chart-empty{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:13.5px;color:${C.muted};padding:0 14px;line-height:1.45;}
+        .fc-bmrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;}
+        .fc-bm{display:inline-flex;align-items:center;gap:6px;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12px;font-weight:600;padding:5px 10px;border-radius:9999px;cursor:pointer;font-family:inherit;}
+        .fc-bm .dot{width:7px;height:7px;border-radius:9999px;}
+        .fc-chart-note{margin-top:10px;font-size:12px;line-height:1.4;color:${C.mutedSoft};display:flex;flex-direction:column;gap:2px;}
+        .fc-check{display:flex;align-items:center;gap:10px;background:none;border:none;padding:2px 0 14px;color:${C.body};font-size:14px;cursor:pointer;font-family:inherit;text-align:left;width:100%;}
+        .fc-check .box{width:20px;height:20px;border-radius:5px;border:1.5px solid ${C.borderStrong};display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;}
+        .fc-check .box.on{background:${C.rausch};border-color:${C.rausch};}
         .fc-chip{display:inline-flex;align-items:center;gap:4px;border:none;background:${C.strong};color:${C.ink};font-size:11px;font-weight:600;padding:4px 9px;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-chip:active{background:${C.borderStrong};}
         .fc-seg{display:flex;background:${C.soft};border-radius:9999px;padding:4px;margin:14px 16px 4px;gap:4px;}
@@ -1574,6 +1916,20 @@ export default function App() {
       {/* ---------- Investments ---------- */}
       {tab === "invest" && (
         <>
+          {data.investments.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <PortfolioChart
+                investments={data.investments}
+                cur={CURRENCIES.includes(settings.currency) ? settings.currency : "EUR"}
+                tdKey={settings.tdKey || ""}
+                benchmarks={Array.isArray(settings.chartBenchmarks) ? settings.chartBenchmarks : []}
+                onToggleBenchmark={(id) => setSettings((s) => {
+                  const list = Array.isArray(s.chartBenchmarks) ? s.chartBenchmarks : [];
+                  return { ...s, chartBenchmarks: list.includes(id) ? list.filter((x) => x !== id) : [...list, id] };
+                })}
+              />
+            </div>
+          )}
           <div className="fc-kpis">
             <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v">{eur(portfolioValue)}</div></div>
             <div className="fc-kpi"><div className="l">Gewinn / Verlust</div><div className="v" style={{ color: gain >= 0 ? C.positive : C.error }}>{gain >= 0 ? "+" : ""}{eur(gain)}</div></div>
