@@ -6,7 +6,7 @@ import {
   LayoutGrid, Receipt, TrendingUp, Settings, Download, Upload,
   Heart, Stethoscope, Users, Banknote,
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap,
-  Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock,
+  Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -114,8 +114,10 @@ const VAR_CAT_ICONS = {
   v_restaurant: Utensils, v_freizeit: Gamepad2, v_kleidung: Shirt,
   v_gesundheit: Stethoscope, v_bildung: GraduationCap, v_sonstiges: MoreHorizontal,
 };
-const ALL_CATS = [...EXPENSE_CATS, ...VARIABLE_CATS];
-const ALL_CAT_ICONS = { ...CAT_ICONS, ...VAR_CAT_ICONS };
+/* Sparrate (nur im Budget-Modus): zählt NICHT zu den Gesamtkosten */
+const SAVE_CAT = { id: "sparen", label: "Sparrate", color: "#2f9e6e" };
+const ALL_CATS = [...EXPENSE_CATS, ...VARIABLE_CATS, SAVE_CAT];
+const ALL_CAT_ICONS = { ...CAT_ICONS, ...VAR_CAT_ICONS, sparen: PiggyBank };
 
 /* Bekannte Ticker: sofortige Namens-/Typ-Erkennung ohne Netz */
 const KNOWN_ASSETS = {
@@ -399,18 +401,21 @@ function IncomeForm({ initial, onSave }) {
 
 function ExpenseForm({ initial, kind, onSave }) {
   const effKind = (initial && initial.kind) || kind || "fix";
-  const cats = effKind === "variabel" ? VARIABLE_CATS : EXPENSE_CATS;
-  const [f, setF] = useState(initial || { name: "", category: cats[0].id, amount: "", interval: "monatlich", kind: effKind });
+  const isSave = effKind === "sparen";
+  const cats = isSave ? [SAVE_CAT] : effKind === "variabel" ? VARIABLE_CATS : EXPENSE_CATS;
+  const [f, setF] = useState(initial || { name: isSave ? "Sparrate" : "", category: cats[0].id, amount: "", interval: "monatlich", kind: effKind });
   return (
     <div className="fc-form">
       <Field label="Bezeichnung">
-        <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder={effKind === "variabel" ? "z. B. Wocheneinkauf" : "z. B. Haftpflicht"} />
+        <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder={isSave ? "z. B. Sparrate, ETF-Sparplan" : effKind === "variabel" ? "z. B. Wocheneinkauf" : "z. B. Haftpflicht"} />
       </Field>
-      <Field label="Kategorie">
-        <select value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })}>
-          {cats.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-        </select>
-      </Field>
+      {!isSave && (
+        <Field label="Kategorie">
+          <select value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })}>
+            {cats.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+        </Field>
+      )}
       <div className="fc-row2">
         <Field label={`Betrag (${curSym()})`}>
           <input type="number" inputMode="decimal" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} placeholder="0" />
@@ -624,23 +629,30 @@ function InvestForm({ initial, onSave, finnhubKey }) {
 }
 
 /* ---------- Cashflow-Leiste ---------- */
-function CashflowBar({ catTotals, creditRate, surplus }) {
+function CashflowBar({ catTotals, creditRate, surplus, savings = 0, budgetFree = 0, budgetMode = false }) {
+  const [open, setOpen] = useState(false);
   const segs = [
     ...catTotals.filter((c) => c.value > 0).map((c) => ({ label: c.label, value: c.value, color: c.color })),
     ...(creditRate > 0 ? [{ label: "Kredite", value: creditRate, color: C.ink }] : []),
-    ...(surplus > 0 ? [{ label: "Überschuss", value: surplus, color: C.positive }] : []),
+    ...(budgetMode && savings > 0 ? [{ label: SAVE_CAT.label, value: savings, color: SAVE_CAT.color }] : []),
+    ...(budgetMode
+      ? (budgetFree > 0 ? [{ label: "Budget frei", value: budgetFree, color: C.positive }] : [])
+      : (surplus > 0 ? [{ label: "Überschuss", value: surplus, color: C.positive }] : [])),
   ];
   const total = segs.reduce((s, x) => s + x.value, 0);
   if (total <= 0) return null;
   const sorted = [...segs].sort((a, b) => b.value - a.value);
   return (
     <div>
-      <div className="fc-flowbar">
-        {segs.map((s, i) => (
-          <div key={i} title={`${s.label}: ${eur(s.value)}`} style={{ width: `${(s.value / total) * 100}%`, background: s.color }} />
-        ))}
-      </div>
-      <div className="fc-flowlist">
+      <button className="fc-flowtoggle" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label={open ? "Details ausblenden" : "Details anzeigen"}>
+        <div className="fc-flowbar">
+          {segs.map((s, i) => (
+            <div key={i} title={`${s.label}: ${eur(s.value)}`} style={{ width: `${(s.value / total) * 100}%`, background: s.color }} />
+          ))}
+        </div>
+        <span className={`fc-flowchev ${open ? "open" : ""}`}><ChevronDown size={16} strokeWidth={2} /></span>
+      </button>
+      <div className="fc-flowlist" style={{ display: open ? "flex" : "none" }}>
         {sorted.map((s, i) => {
           const pct = (s.value / total) * 100;
           return (
@@ -733,7 +745,7 @@ function ForecastView({ surplus, startValue }) {
 /* ---------- Haupt-App ---------- */
 export default function App() {
   const [data, setData] = useState(() => loadLS(DATA_KEY, EMPTY));
-  const [settings, setSettings] = useState(() => loadLS(SETTINGS_KEY, { finnhubKey: "", currency: "EUR", theme: "system", tdKey: "" }));
+  const [settings, setSettings] = useState(() => loadLS(SETTINGS_KEY, { finnhubKey: "", currency: "EUR", theme: "system", tdKey: "", calcMode: "surplus" }));
   CUR = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
   const [tab, setTab] = useState("home");
   const [costView, setCostView] = useState("fix");
@@ -843,17 +855,22 @@ export default function App() {
 
   /* Abgeleitete Zahlen */
   const incomeTotal = useMemo(() => data.incomes.reduce((s, i) => s + (Number(i.amount) || 0), 0), [data.incomes]);
-  const fixTotal = useMemo(() => data.expenses.filter((e) => e.kind !== "variabel").reduce((s, e) => s + monthly(e), 0), [data.expenses]);
+  const fixTotal = useMemo(() => data.expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen").reduce((s, e) => s + monthly(e), 0), [data.expenses]);
   const varTotal = useMemo(() => data.expenses.filter((e) => e.kind === "variabel").reduce((s, e) => s + monthly(e), 0), [data.expenses]);
+  const savingsTotal = useMemo(() => data.expenses.filter((e) => e.kind === "sparen").reduce((s, e) => s + monthly(e), 0), [data.expenses]);
   const costTotal = fixTotal + varTotal;
+  const budgetMode = settings.calcMode === "budget";
   const creditRate = useMemo(() => data.credits.reduce((s, c) => s + (Number(c.rate) || 0), 0), [data.credits]);
   const creditBalance = useMemo(() => data.credits.reduce((s, c) => s + (Number(c.balance) || 0), 0), [data.credits]);
   const surplus = incomeTotal - costTotal - creditRate;
+  /* Budget-Modus: was nach Fixkosten, Krediten und Sparrate für variable Ausgaben bleibt */
+  const budgetTotal = incomeTotal - fixTotal - creditRate - savingsTotal;
+  const budgetFree = budgetTotal - varTotal;
 
   const catTotals = useMemo(() =>
     ALL_CATS.map((c) => ({
       ...c,
-      value: data.expenses.filter((e) => e.category === c.id).reduce((s, e) => s + monthly(e), 0),
+      value: data.expenses.filter((e) => e.category === c.id && e.kind !== "sparen").reduce((s, e) => s + monthly(e), 0),
     })).filter((c) => c.value > 0),
   [data.expenses]);
 
@@ -1175,6 +1192,10 @@ export default function App() {
         .fc-hero .lbl{display:flex;align-items:center;justify-content:center;gap:8px;}
         .fc-eye{border:none;background:${C.strong};color:${C.muted};width:26px;height:26px;border-radius:9999px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;}
         .fc-eye:active{background:${C.borderStrong};}
+        .fc-flowtoggle{width:100%;background:none;border:none;padding:0;display:flex;align-items:center;gap:10px;cursor:pointer;font-family:inherit;}
+        .fc-flowtoggle .fc-flowbar{flex:1;}
+        .fc-flowchev{color:${C.mutedSoft};display:inline-flex;transition:transform .2s ease;flex-shrink:0;}
+        .fc-flowchev.open{transform:rotate(180deg);}
         .fc-flowlist{margin-top:14px;display:flex;flex-direction:column;gap:2px;}
         .fc-flowrow{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid ${C.hairlineSoft};font-size:14px;}
         .fc-flowrow:last-child{border-bottom:none;}
@@ -1275,10 +1296,10 @@ export default function App() {
             <div className="fc-kpi"><div className="l">Gesamtkosten</div><div className="v">{eur(costTotal)}</div></div>
             <div className="fc-kpi">
               <div className="l" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
-                <span>Monatl. Überschuss</span>
+                <span>{budgetMode ? SAVE_CAT.label : "Monatl. Überschuss"}</span>
                 <button className="fc-chip" onClick={() => setSheet({ type: "forecast" })} aria-label="Prognose öffnen"><TrendingUp size={12} strokeWidth={2} /> Prognose</button>
               </div>
-              <div className="v" style={{ color: surplus >= 0 ? C.positive : C.error }}>{eur(surplus)}</div>
+              <div className="v" style={{ color: (budgetMode ? savingsTotal : surplus) >= 0 ? C.positive : C.error }}>{eur(budgetMode ? savingsTotal : surplus)}</div>
             </div>
             <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v">{eurM(portfolioValue)}</div></div>
           </div>
@@ -1287,7 +1308,7 @@ export default function App() {
             <>
               <SectionTitle>Wohin dein Geld fliesst</SectionTitle>
               <Card>
-                <CashflowBar catTotals={catTotals} creditRate={creditRate} surplus={surplus} />
+                <CashflowBar catTotals={catTotals} creditRate={creditRate} surplus={surplus} savings={savingsTotal} budgetFree={budgetFree} budgetMode={budgetMode} />
               </Card>
             </>
           )}
@@ -1408,14 +1429,49 @@ export default function App() {
                   </React.Fragment>
                 );
               })}
-              {data.expenses.filter((e) => e.kind !== "variabel").length === 0 && <div style={{ marginTop: 12 }}><Empty text="Erfasse Versicherungen, Miete, Abos und andere Fixkosten – monatlich oder jährlich." /></div>}
+              {data.expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen").length === 0 && <div style={{ marginTop: 12 }}><Empty text="Erfasse Versicherungen, Miete, Abos und andere Fixkosten – monatlich oder jährlich." /></div>}
+              {budgetMode && (
+                <>
+                  <SectionTitle right={<span className="fc-sum">{eur(savingsTotal)} / Monat</span>}>{SAVE_CAT.label}</SectionTitle>
+                  {data.expenses.filter((e) => e.kind === "sparen").length === 0
+                    ? <Empty text="Lege fest, wie viel du jeden Monat fest zur Seite legst. Die Sparrate zählt nicht zu den Gesamtkosten." />
+                    : <Card>{data.expenses.filter((e) => e.kind === "sparen").map((e) => (
+                        <ListItem key={e.id}
+                          lead={<Lead icon={PiggyBank} />}
+                          armed={pendingDelete === e.id}
+                          title={e.name}
+                          tag={e.interval === "jaehrlich" ? <YearTag /> : null}
+                          sub={e.interval === "jaehrlich" ? `${eurFull(e.amount)} / Jahr` : "monatlich"}
+                          value={eur(monthly(e))}
+                          onEdit={() => setSheet({ type: "expense", item: e })}
+                          onDelete={() => remove("expenses", e.id)}
+                        />
+                      ))}</Card>}
+                  <div style={{ margin: "0 16px 16px" }}><Btn kind="ghost" onClick={() => setSheet({ type: "expense", kind: "sparen" })}>Sparrate hinzufügen</Btn></div>
+                </>
+              )}
               <div style={{ margin: "0 16px" }}><Btn onClick={() => setSheet({ type: "expense", kind: "fix" })}>Fixkosten hinzufügen</Btn></div>
             </>
           ) : (
             <>
               <div className="fc-kpis">
-                <div className="fc-kpi"><div className="l">Variable Kosten / Monat</div><div className="v">{eur(varTotal)}</div></div>
-                <div className="fc-kpi"><div className="l">Ø pro Tag</div><div className="v">{eur(varTotal / 30)}</div></div>
+                {budgetMode ? (
+                  <>
+                    <div className="fc-kpi">
+                      <div className="l">Restliches Budget</div>
+                      <div className="v" style={{ color: budgetTotal >= 0 ? C.ink : C.error }}>{eur(budgetTotal)}</div>
+                      <div style={{ fontSize: 12.5, marginTop: 3, color: budgetFree >= 0 ? C.positive : C.error }}>
+                        {budgetFree >= 0 ? `noch frei: ${eur(budgetFree)}` : `überzogen: ${eur(-budgetFree)}`}
+                      </div>
+                    </div>
+                    <div className="fc-kpi"><div className="l">Davon ausgegeben</div><div className="v">{eur(varTotal)}</div></div>
+                  </>
+                ) : (
+                  <>
+                    <div className="fc-kpi"><div className="l">Variable Kosten / Monat</div><div className="v">{eur(varTotal)}</div></div>
+                    <div className="fc-kpi"><div className="l">Ø pro Tag</div><div className="v">{eur(varTotal / 30)}</div></div>
+                  </>
+                )}
               </div>
               {VARIABLE_CATS.map((cat) => {
                 const items = data.expenses.filter((e) => e.category === cat.id && e.kind === "variabel");
@@ -1549,13 +1605,13 @@ export default function App() {
         </Sheet>
       )}
       {sheet?.type === "expense" && (
-        <Sheet title={sheet.item ? "Ausgabe bearbeiten" : ((sheet.kind || "fix") === "variabel" ? "Neue variable Ausgabe" : "Neue Fixkosten")} onClose={() => setSheet(null)}>
+        <Sheet title={sheet.item ? ((sheet.item.kind === "sparen") ? "Sparrate bearbeiten" : "Ausgabe bearbeiten") : ((sheet.kind || "fix") === "variabel" ? "Neue variable Ausgabe" : (sheet.kind === "sparen" ? "Neue Sparrate" : "Neue Fixkosten"))} onClose={() => setSheet(null)}>
           <ExpenseForm initial={sheet.item} kind={sheet.kind} onSave={(f) => save("expenses", f)} />
         </Sheet>
       )}
       {sheet?.type === "forecast" && (
         <Sheet title="Prognose – Vermögensentwicklung" onClose={() => setSheet(null)}>
-          <ForecastView surplus={surplus} startValue={netWorth} />
+          <ForecastView surplus={budgetMode ? savingsTotal : surplus} startValue={netWorth} />
         </Sheet>
       )}
       {sheet?.type === "credit" && (
@@ -1570,6 +1626,20 @@ export default function App() {
       )}
       {sheet?.type === "settings" && (
         <Sheet title="Einstellungen" onClose={() => setSheet(null)}>
+          <Field label="Berechnung der Übersicht">
+            <div style={{ display: "flex", gap: 8 }}>
+              {[{ id: "surplus", label: "Überschuss" }, { id: "budget", label: "Budget" }].map((o) => (
+                <Btn key={o.id} kind={(settings.calcMode || "surplus") === o.id ? "primary" : "ghost"} onClick={() => setSettings({ ...settings, calcMode: o.id })} style={{ flex: 1 }}>
+                  {o.label}
+                </Btn>
+              ))}
+            </div>
+          </Field>
+          <div style={{ fontSize: 12.5, lineHeight: 1.4, color: C.muted, margin: "-6px 0 14px" }}>
+            <b>Überschuss</b>: zeigt, was am Monatsende übrig bleibt.<br />
+            <b>Budget</b>: du legst eine feste Sparrate fest (Reiter Kosten → Fixkosten). Sie zählt nicht zu den Gesamtkosten;
+            unter „Variabel“ siehst du stattdessen dein restliches Budget.
+          </div>
           <Field label="Darstellung">
             <div style={{ display: "flex", gap: 8 }}>
               {[{ id: "light", label: "Hell", Ic: Sun }, { id: "dark", label: "Dunkel", Ic: Moon }, { id: "system", label: "System", Ic: Monitor }].map((o) => (
