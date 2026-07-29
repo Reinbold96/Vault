@@ -2228,7 +2228,7 @@ export default function App() {
   const shownCatData = shownCat >= 0 ? catTotals[shownCat] : null;
   const centerVal = masked ? MASK : eurFull(shownCatData ? shownCatData.value : catSum);
   /* Sehr lange Betraege werden kleiner gesetzt, damit sie nie an den Innenring stossen */
-  const centerValSize = centerVal.length > 13 ? 13 : centerVal.length > 11 ? 14.5 : 16;
+  const centerValSize = centerVal.length > 13 ? 14 : centerVal.length > 11 ? 15 : 17;
 
   /* Verträge, deren Kündigung in den nächsten 60 Tagen fällig wird */
   const dueContracts = useMemo(() => {
@@ -2860,13 +2860,17 @@ export default function App() {
         .fc-undo-inner{pointer-events:auto;display:flex;align-items:center;gap:14px;max-width:492px;width:calc(100% - 32px);background:${C.ink};color:${C.canvas};border-radius:12px;padding:12px 14px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.28);}
         .fc-undo-inner .txt{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-undo-inner button{border:none;background:none;color:${C.canvas};font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;text-decoration:underline;flex-shrink:0;}
-        /* Infobox in der Ringmitte. Die max-width-Werte sind so gewaehlt, dass der
-           Text auch bei langen Kategorienamen immer im freien Innenkreis bleibt
-           (Innenradius 66px -> sichere Breite ca. 100px, Mittelzeile 112px). */
-        .fc-pie-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;pointer-events:none;text-align:center;}
-        .fc-pie-center .lb{max-width:100px;font-size:12px;font-weight:600;color:${C.muted};line-height:1.2;overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
-        .fc-pie-center .vl{max-width:112px;font-size:16px;font-weight:700;color:${C.ink};line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-        .fc-pie-center .sh{max-width:100px;font-size:11px;color:${C.mutedSoft};line-height:1.2;overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;}
+        /* Ringmitte: nur Betrag + Anteil. Beide absolut positioniert, damit der Betrag
+           immer exakt im Kreismittelpunkt sitzt und niemals verschoben wird.
+           Innenradius 66px -> sichere Breite in der Mitte 112px. */
+        .fc-pie-center{position:absolute;inset:0;pointer-events:none;}
+        .fc-pie-center .vl{position:absolute;left:50%;top:50%;transform:translate(-50%,-58%);width:112px;text-align:center;font-size:16px;font-weight:700;color:${C.ink};line-height:1.1;white-space:nowrap;}
+        .fc-pie-center .sh{position:absolute;left:50%;top:50%;transform:translate(-50%,10px);width:104px;text-align:center;font-size:11px;color:${C.mutedSoft};line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        /* Kategoriename unter dem Ring: eine Zeile, feste Hoehe (kein Springen),
+           volle Kartenbreite - bei extremen Namen Ellipsis als letzte Reserve. */
+        .fc-pie-caption{display:flex;align-items:center;justify-content:center;gap:7px;min-height:24px;margin:6px 4px 0;font-size:13px;font-weight:600;color:${C.ink};}
+        .fc-pie-caption .dot{width:8px;height:8px;border-radius:50%;flex:none;}
+        .fc-pie-caption .tx{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-search{position:relative;margin:14px 16px 4px;}
         .fc-search input{width:100%;background:${C.soft};border:1px solid transparent;border-radius:9999px;padding:11px 14px 11px 40px;height:44px;color:${C.ink};font-size:15px;}
         .fc-search input:focus{outline:none;border-color:${C.borderStrong};background:${C.canvas};}
@@ -3133,22 +3137,21 @@ export default function App() {
                     </PieChart>
                   </ResponsiveContainer>
 
-                  {/* Feste Infobox in der Mitte des Rings - immer gleiche Position */}
+                  {/* Betrag ist der fixe Anker: absolut in der Ringmitte verankert,
+                     daher verschiebt ihn kein Text darueber oder darunter. */}
                   <div className="fc-pie-center">
-                    {shownCatData ? (
-                      <>
-                        <div className="lb" title={shownCatData.label}>{shownCatData.label}</div>
-                        <div className="vl" style={{ fontSize: centerValSize }}>{centerVal}</div>
-                        <div className="sh">{catSum > 0 ? `${Math.round((shownCatData.value / catSum) * 100)} %` : ""}</div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="lb">Gesamt</div>
-                        <div className="vl" style={{ fontSize: centerValSize }}>{centerVal}</div>
-                        <div className="sh">antippen</div>
-                      </>
-                    )}
+                    <div className="vl" style={{ fontSize: centerValSize }}>{centerVal}</div>
+                    <div className="sh">
+                      {shownCatData && catSum > 0 ? `${Math.round((shownCatData.value / catSum) * 100)} %` : "pro Monat"}
+                    </div>
                   </div>
+                </div>
+
+                {/* Kategoriename ausserhalb des Rings: volle Kartenbreite, feste Zeilenhoehe.
+                   Damit kann der Name nie den Innenring beruehren und nichts springt. */}
+                <div className="fc-pie-caption">
+                  {shownCatData && <span className="dot" style={{ background: shownCatData.color }} />}
+                  <span className="tx">{shownCatData ? shownCatData.label : "Gesamtausgaben – Kategorie antippen"}</span>
                 </div>
 
               </Card>
