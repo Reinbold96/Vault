@@ -178,6 +178,12 @@ const TICKER_DOMAINS = {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+/* Echte Hover-Geraete (Maus/Trackpad). Auf Touch feuern Browser Fake-Mouse-Events,
+   die sonst mit dem Tap-Handler kollidieren -> Auswahl wechselt erst beim 2. Tippen. */
+const CAN_HOVER = (() => {
+  try { return window.matchMedia("(hover: hover) and (pointer: fine)").matches; } catch { return false; }
+})();
+
 /* "vor 3 Std." – Alter eines Zeitstempels in Worten */
 const agoLabel = (ts) => {
   if (!ts) return "";
@@ -2066,6 +2072,7 @@ export default function App() {
   const [priceStatus, setPriceStatus] = useState("");
   const [priceFailIds, setPriceFailIds] = useState([]);
   const [activeCat, setActiveCat] = useState(-1);
+  const [hoverCat, setHoverCat] = useState(-1);
   const [masked, setMasked] = useState(() => { try { return localStorage.getItem("finanz_masked") === "1"; } catch { return false; } });
   const [locked, setLocked] = useState(() => {
     try {
@@ -2212,6 +2219,13 @@ export default function App() {
       value: data.expenses.filter((e) => e.category === c.id && e.kind !== "sparen").reduce((s, e) => s + monthly(e), 0),
     })).filter((c) => c.value > 0),
   [data.expenses, allCats]);
+
+  const catSum = useMemo(() => catTotals.reduce((a, c) => a + c.value, 0), [catTotals]);
+  /* Auswahl (Tap) hat Vorrang, Hover nur als Vorschau auf Desktop */
+  const shownCat = activeCat >= 0 && activeCat < catTotals.length
+    ? activeCat
+    : (hoverCat >= 0 && hoverCat < catTotals.length ? hoverCat : -1);
+  const shownCatData = shownCat >= 0 ? catTotals[shownCat] : null;
 
   /* Verträge, deren Kündigung in den nächsten 60 Tagen fällig wird */
   const dueContracts = useMemo(() => {
@@ -2843,6 +2857,14 @@ export default function App() {
         .fc-undo-inner{pointer-events:auto;display:flex;align-items:center;gap:14px;max-width:492px;width:calc(100% - 32px);background:${C.ink};color:${C.canvas};border-radius:12px;padding:12px 14px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.28);}
         .fc-undo-inner .txt{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-undo-inner button{border:none;background:none;color:${C.canvas};font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;text-decoration:underline;flex-shrink:0;}
+        .fc-pie-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;pointer-events:none;text-align:center;}
+        .fc-pie-center .lb{max-width:108px;font-size:12px;font-weight:600;color:${C.muted};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+        .fc-pie-center .vl{font-size:17px;font-weight:700;color:${C.ink};line-height:1.15;}
+        .fc-pie-center .sh{max-width:112px;font-size:11px;color:${C.mutedSoft};line-height:1.2;}
+        .fc-pie-legend{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:10px;}
+        .fc-pie-tag{display:inline-flex;align-items:center;gap:6px;border:1px solid ${C.hairline};background:${C.soft};color:${C.muted};border-radius:9999px;padding:6px 11px;font-size:12px;font-weight:600;cursor:pointer;min-height:32px;}
+        .fc-pie-tag.on{border-color:${C.borderStrong};background:${C.canvas};color:${C.ink};}
+        .fc-pie-tag .dot{width:8px;height:8px;border-radius:50%;flex:none;}
         .fc-search{position:relative;margin:14px 16px 4px;}
         .fc-search input{width:100%;background:${C.soft};border:1px solid transparent;border-radius:9999px;padding:11px 14px 11px 40px;height:44px;color:${C.ink};font-size:15px;}
         .fc-search input:focus{outline:none;border-color:${C.borderStrong};background:${C.canvas};}
@@ -3081,33 +3103,65 @@ export default function App() {
             <>
               <SectionTitle>Ausgaben nach Kategorie</SectionTitle>
               <Card>
-                <div style={{ width: "100%", height: 210 }}>
+                <div style={{ position: "relative", width: "100%", height: 210 }}>
                   <ResponsiveContainer>
                     <PieChart>
                       <Pie
                         data={catTotals} dataKey="value" nameKey="label"
-                        innerRadius={52} outerRadius={80} paddingAngle={3} stroke="none"
-                        activeIndex={activeCat >= 0 ? activeCat : undefined}
+                        innerRadius={56} outerRadius={82} paddingAngle={3} stroke="none"
+                        activeIndex={shownCat >= 0 ? shownCat : undefined}
                         activeShape={(p) => (
                           <g style={{ filter: "brightness(1.14) saturate(1.05)" }}>
                             <Sector {...p} outerRadius={p.outerRadius + 7} innerRadius={p.innerRadius - 2} cornerRadius={3} />
                           </g>
                         )}
-                        onMouseEnter={(_, idx) => setActiveCat(idx)}
-                        onMouseLeave={() => setActiveCat(-1)}
-                        onClick={(_, idx) => setActiveCat((p) => (p === idx ? -1 : idx))}
+                        onMouseEnter={CAN_HOVER ? (_, idx) => setHoverCat(idx) : undefined}
+                        onMouseLeave={CAN_HOVER ? () => setHoverCat(-1) : undefined}
+                        onClick={(_, idx) => { setHoverCat(-1); setActiveCat((p) => (p === idx ? -1 : idx)); }}
                         isAnimationActive={false}
                       >
-                        {catTotals.map((c) => <Cell key={c.id} fill={c.color} />)}
+                        {catTotals.map((c, i) => (
+                          <Cell
+                            key={c.id}
+                            fill={c.color}
+                            style={{ cursor: "pointer", opacity: shownCat < 0 || shownCat === i ? 1 : 0.42, transition: "opacity .15s" }}
+                          />
+                        ))}
                       </Pie>
-                      <Tooltip
-                        formatter={(v, n) => [eurFull(v), n]}
-                        contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 14, boxShadow: SHADOW }}
-                        labelStyle={{ color: C.muted }}
-                        itemStyle={{ color: C.ink }}
-                      />
                     </PieChart>
                   </ResponsiveContainer>
+
+                  {/* Feste Infobox in der Mitte des Rings - immer gleiche Position */}
+                  <div className="fc-pie-center">
+                    {shownCatData ? (
+                      <>
+                        <div className="lb" title={shownCatData.label}>{shownCatData.label}</div>
+                        <div className="vl">{masked ? MASK : eurFull(shownCatData.value)}</div>
+                        <div className="sh">{catSum > 0 ? `${Math.round((shownCatData.value / catSum) * 100)}% der Ausgaben` : ""}</div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="lb">Gesamt</div>
+                        <div className="vl">{masked ? MASK : eurFull(catSum)}</div>
+                        <div className="sh">Kategorie antippen</div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Legende - zuverlaessiges Ziel fuer kleine Segmente */}
+                <div className="fc-pie-legend">
+                  {catTotals.map((c, i) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      className={`fc-pie-tag ${shownCat === i ? "on" : ""}`}
+                      onClick={() => { setHoverCat(-1); setActiveCat((p) => (p === i ? -1 : i)); }}
+                    >
+                      <span className="dot" style={{ background: c.color }} />
+                      {c.label}
+                    </button>
+                  ))}
                 </div>
               </Card>
             </>
