@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAxis, YAxis, Sector, CartesianGrid, ReferenceLine } from "recharts";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAxis, YAxis, Sector, CartesianGrid } from "recharts";
 import {
   Shield, Home, Car, Repeat, ShoppingCart, MoreHorizontal,
   Wallet, Baby, HeartHandshake, Coins, Landmark,
@@ -1245,10 +1245,17 @@ function ExtraPaymentForm({ credit, onSave, cashAvail = 0 }) {
 function AmortView({ credit }) {
   const plan = useMemo(() => amortSchedule(credit), [credit]);
   const fixIdx = plan.fixMonths != null && plan.fixMonths <= plan.rows.length ? plan.fixMonths : null;
+  /* Zwei Linien: bis Zinsbindungsende durchgezogen, danach gestrichelt (Annahme) */
   const chart = useMemo(() => {
     const step = Math.max(1, Math.ceil(plan.rows.length / 300));
-    return plan.rows.filter((_, i) => i % step === 0 || i === plan.rows.length - 1);
-  }, [plan.rows]);
+    return plan.rows
+      .filter((_, i) => i % step === 0 || i === plan.rows.length - 1)
+      .map((r) => ({
+        ...r,
+        bal1: fixIdx == null || r.m <= fixIdx ? r.bal : null,
+        bal2: fixIdx != null && r.m >= fixIdx ? r.bal : null,
+      }));
+  }, [plan.rows, fixIdx]);
   const fixRow = fixIdx ? plan.rows[fixIdx - 1] : null;
   const follow = credit.followInterest === "" || credit.followInterest == null ? credit.interest : credit.followInterest;
 
@@ -1290,14 +1297,14 @@ function AmortView({ credit }) {
             <YAxis width={58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline}
               tickFormatter={(v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1).replace(".", ",")} Mio` : Math.round(v).toLocaleString(CUR === "CHF" ? "de-CH" : "de-DE"))} />
             <Tooltip
-              formatter={(v) => [eurFull(v), "Restschuld"]}
+              formatter={(v, n) => [eurFull(v), n]}
               labelFormatter={(l) => `Jahr ${l}`}
               contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 12.5, boxShadow: SHADOW }}
               labelStyle={{ color: C.muted }}
               itemStyle={{ color: C.ink }}
             />
-            {fixRow && <ReferenceLine x={fixRow.label} stroke={C.error} strokeDasharray="4 3" label={{ value: "Zinsbindung", position: "insideTopRight", fill: C.error, fontSize: 10.5 }} />}
-            <Line type="monotone" dataKey="bal" stroke={C.rausch} strokeWidth={2.4} dot={false} />
+            <Line type="monotone" dataKey="bal1" name="Zinsbindung" stroke={C.rausch} strokeWidth={2.4} dot={false} connectNulls={false} />
+            {fixRow && <Line type="monotone" dataKey="bal2" name="nach Refinanzierung" stroke={C.luxe} strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls={false} />}
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -2758,7 +2765,8 @@ export default function App() {
         .fc-item-right{display:flex;align-items:center;gap:12px;}
         .fc-item-value{font-size:16px;font-weight:600;line-height:1.25;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;}
         .fc-del{width:32px;height:32px;border-radius:9999px;border:none;background:${C.strong};color:${C.ink};font-size:16px;line-height:1;cursor:pointer;flex-shrink:0;}
-        .fc-undo{position:fixed;left:0;right:0;bottom:calc(66px + env(safe-area-inset-bottom));display:flex;justify-content:center;z-index:45;pointer-events:none;}
+        .fc-undo{position:fixed;left:0;right:0;bottom:calc(66px + env(safe-area-inset-bottom));display:flex;justify-content:center;z-index:60;pointer-events:none;}
+        .fc-undo.top{top:calc(12px + env(safe-area-inset-top));bottom:auto;}
         .fc-undo-inner{pointer-events:auto;display:flex;align-items:center;gap:14px;max-width:492px;width:calc(100% - 32px);background:${C.ink};color:${C.canvas};border-radius:12px;padding:12px 14px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.28);}
         .fc-undo-inner .txt{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-undo-inner button{border:none;background:none;color:${C.canvas};font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;text-decoration:underline;flex-shrink:0;}
@@ -3719,7 +3727,7 @@ export default function App() {
 
       {/* ---------- Rückgängig-Leiste ---------- */}
       {undo && (
-        <div className="fc-undo">
+        <div className={`fc-undo ${sheet ? "top" : ""}`}>
           <div className="fc-undo-inner">
             <span className="txt">{undo.label}</span>
             <button onClick={doUndo}>Rückgängig</button>
