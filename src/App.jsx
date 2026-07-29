@@ -2215,13 +2215,12 @@ export default function App() {
   /* Löschen ohne Rückfrage, dafür 8 Sekunden Rückgängig-Leiste */
   const undoTimer = useRef(null);
   function withUndo(label, mutate) {
-    setData((d) => {
-      const before = d;
-      setUndo({ label, before });
-      if (undoTimer.current) clearTimeout(undoTimer.current);
-      undoTimer.current = setTimeout(() => setUndo(null), 8000);
-      return mutate(d);
-    });
+    /* Zustand vor der Änderung sichern – ausserhalb des Updaters, damit er
+       auch bei mehrfach ausgeführten Updates unverändert bleibt */
+    setUndo({ label, before: data });
+    if (undoTimer.current) clearTimeout(undoTimer.current);
+    undoTimer.current = setTimeout(() => setUndo(null), 8000);
+    setData((d) => mutate(d));
   }
   function doUndo() {
     if (!undo) return;
