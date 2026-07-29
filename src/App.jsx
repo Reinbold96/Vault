@@ -233,6 +233,14 @@ const b64d = (s) => {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 };
 const bioAvailable = () => typeof window !== "undefined" && !!(window.PublicKeyCredential && navigator.credentials);
+
+/* Einmal entsperrt bleibt die App für diese Sitzung offen – ein Neuladen
+   (z. B. Pull-to-Refresh) sperrt sie dadurch nicht erneut. Beim echten
+   Schliessen der App verwirft der Browser den Session-Speicher. */
+const UNLOCK_KEY = "vault_unlocked";
+const sessionUnlocked = () => { try { return sessionStorage.getItem(UNLOCK_KEY) === "1"; } catch { return false; } };
+const markUnlocked = () => { try { sessionStorage.setItem(UNLOCK_KEY, "1"); } catch { /* Privatmodus */ } };
+const clearUnlocked = () => { try { sessionStorage.removeItem(UNLOCK_KEY); } catch { /* Privatmodus */ } };
 async function bioRegister() {
   const challenge = crypto.getRandomValues(new Uint8Array(32));
   const userId = crypto.getRandomValues(new Uint8Array(16));
@@ -262,8 +270,8 @@ async function bioVerify(credId) {
 const BENCHMARKS = [
   { id: "sp500", label: "S&P 500", sym: "SPY", color: "#4a96eb" },
   { id: "nasdaq", label: "Nasdaq 100", sym: "QQQ", color: "#b598ff" },
-  { id: "world", label: "Welt", sym: "URTH", color: "#f0a83a" },
-  { id: "dax", label: "Deutschland", sym: "EWG", color: "#45c98a" },
+  { id: "world", label: "All World", sym: "URTH", color: "#f0a83a" },
+  { id: "dax", label: "DAX", sym: "EWG", color: "#45c98a" },
 ];
 /* Typen, für die es kostenlose Kurshistorie gibt */
 const HIST_TYPES = ["aktie", "etf", "krypto"];
@@ -1375,7 +1383,12 @@ export default function App() {
   const [priceFailIds, setPriceFailIds] = useState([]);
   const [activeCat, setActiveCat] = useState(-1);
   const [masked, setMasked] = useState(() => { try { return localStorage.getItem("finanz_masked") === "1"; } catch { return false; } });
-  const [locked, setLocked] = useState(() => { try { const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); return !!s.lockEnabled; } catch { return false; } });
+  const [locked, setLocked] = useState(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+      return !!s.lockEnabled && !sessionUnlocked();
+    } catch { return false; }
+  });
   const [lockMsg, setLockMsg] = useState("");
   const [pendingDelete, setPendingDelete] = useState(null);
   const [fxRates, setFxRates] = useState({ EUR: 1, USD: 1, CHF: 1 });
@@ -1418,7 +1431,7 @@ export default function App() {
     setLockMsg("");
     try {
       const ok = await bioVerify(settings.lockCredId);
-      if (ok) setLocked(false);
+      if (ok) { markUnlocked(); setLocked(false); }
       else setLockMsg("Nicht erkannt – bitte erneut versuchen.");
     } catch (e) {
       setLockMsg("Entsperren abgebrochen oder nicht möglich.");
@@ -1430,7 +1443,7 @@ export default function App() {
     if (!bioAvailable()) { setLockMsg("Dieses Gerät unterstützt keine Biometrie im Browser."); return; }
     try {
       const id = await bioRegister();
-      if (id) setSettings((s) => ({ ...s, lockEnabled: true, lockCredId: id }));
+      if (id) { markUnlocked(); setSettings((s) => ({ ...s, lockEnabled: true, lockCredId: id })); }
       else setLockMsg("Einrichtung fehlgeschlagen.");
     } catch (e) {
       setLockMsg("Einrichtung abgebrochen. Face ID/Fingerabdruck muss auf dem Gerät aktiv sein.");
@@ -2014,7 +2027,7 @@ export default function App() {
             <div className="txt">Mit Face ID, Fingerabdruck oder Geräte-PIN entsperren.</div>
             <Btn onClick={unlock} style={{ gap: 8 }}><Fingerprint size={17} strokeWidth={1.9} /> Entsperren</Btn>
             {lockMsg && <div className="err">{lockMsg}</div>}
-            <button className="fc-lock-alt" onClick={() => { setSettings((s) => ({ ...s, lockEnabled: false, lockCredId: "" })); setLocked(false); }}>
+            <button className="fc-lock-alt" onClick={() => { clearUnlocked(); setSettings((s) => ({ ...s, lockEnabled: false, lockCredId: "" })); setLocked(false); }}>
               Sperre deaktivieren
             </button>
           </div>
@@ -2514,7 +2527,7 @@ export default function App() {
           </div>
           <Field label="App-Sperre (Face ID / Fingerabdruck, Fallback Geräte-PIN)">
             {settings.lockEnabled ? (
-              <Btn kind="ghost" onClick={() => setSettings({ ...settings, lockEnabled: false, lockCredId: "" })} style={{ gap: 8 }}>
+              <Btn kind="ghost" onClick={() => { clearUnlocked(); setSettings({ ...settings, lockEnabled: false, lockCredId: "" }); }} style={{ gap: 8 }}>
                 <Lock size={15} strokeWidth={1.9} /> Sperre ist aktiv – deaktivieren
               </Btn>
             ) : (
