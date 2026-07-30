@@ -1754,18 +1754,25 @@ function ForecastView({ surplus, startValue }) {
 const RANGES = [
   { id: "1M", label: "1M", days: 30 },
   { id: "6M", label: "6M", days: 182 },
+  { id: "YTD", label: "YTD", days: 0, ytd: true },
   { id: "1J", label: "1J", days: 365 },
   { id: "MAX", label: "Max", days: 0 },
 ];
+
+/* 1. Januar des laufenden Jahres als ISO-Tag (Start fuer YTD) */
+const yearStartIso = () => `${new Date().getFullYear()}-01-01`;
 
 /* Datenschlüssel einer Gruppe im Historien-Cache */
 const histKeyOf = (g, cur) => g.type === "krypto"
   ? `cg:${g.ref.coinId || (g.ref.symbol || "").toUpperCase()}:${cur}`
   : `td:${(g.ref.symbol || "").toUpperCase()}`;
 
-function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBenchmark }) {
-  const [range, setRange] = useState("6M");
-  const [mode, setMode] = useState("value");
+function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBenchmark, range: rangeProp, mode: modeProp, onRange, onMode }) {
+  /* Zeitraum und Darstellung liegen in den Settings, damit die Wahl einen App-Neustart ueberlebt */
+  const range = RANGES.some((r) => r.id === rangeProp) ? rangeProp : "6M";
+  const mode = modeProp === "perf" ? "perf" : "value";
+  const setRange = onRange;
+  const setMode = onMode;
   const [hover, setHover] = useState(null);
   const [state, setState] = useState({ loading: false, rows: [], notes: [], err: "" });
 
@@ -1920,9 +1927,10 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
 
   /* --- Zeitraum zuschneiden, Benchmarks auf Startpunkt normalisieren --- */
   const view = useMemo(() => {
-    const r = RANGES.find((x) => x.id === range) || RANGES[1];
+    const r = RANGES.find((x) => x.id === range) || RANGES.find((x) => x.id === "6M");
     let rows = state.rows;
-    if (r.days) { const from = addDays(todayIso(), -r.days); rows = rows.filter((x) => x.d >= from); }
+    if (r.ytd) { const from = yearStartIso(); rows = rows.filter((x) => x.d >= from); }
+    else if (r.days) { const from = addDays(todayIso(), -r.days); rows = rows.filter((x) => x.d >= from); }
     if (!rows.length) return { rows: [], first: null, last: null };
     const first = rows[0], last = rows[rows.length - 1];
     const bmBase = {};
@@ -1944,7 +1952,16 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
     return { rows: out, first, last };
   }, [state.rows, range, bmKey]);
 
-  const showPerf = mode === "perf" || activeBms.length > 0;
+  /* Die Darstellung haengt nur noch am Umschalter. Vergleichsindizes werden
+     ausschliesslich in der %-Ansicht gezeichnet, blockieren den Wechsel aber nicht. */
+  const showPerf = mode === "perf";
+  const showBms = showPerf && activeBms.length > 0;
+  /* Index einschalten heisst: vergleichen wollen -> aus der Wert-Ansicht automatisch auf % */
+  const toggleBm = (id) => {
+    const wasOn = benchmarks.includes(id);
+    onToggleBenchmark(id);
+    if (!wasOn && !showPerf) setMode("perf");
+  };
   /* Gewinnänderung im Zeitraum: Buchgewinn-Differenz plus die in dieser Zeit realisierten Gewinne */
   const realizedWin = useMemo(() => {
     if (!view.first || !view.last) return 0;
@@ -1992,7 +2009,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
           ) : null}
         </div>
         <div className="fc-chart-modes">
-          <button className={!showPerf ? "active" : ""} onClick={() => setMode("value")} disabled={activeBms.length > 0}>Wert</button>
+          <button className={!showPerf ? "active" : ""} onClick={() => setMode("value")}>Wert</button>
           <button className={showPerf ? "active" : ""} onClick={() => setMode("perf")}>%</button>
         </div>
       </div>
@@ -2029,7 +2046,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
                 itemStyle={{ color: C.ink }}
                 cursor={{ stroke: C.borderStrong, strokeWidth: 1, strokeDasharray: "3 3" }}
                 /* Bei nur einer Linie steht der Wert schon im Kopf */
-                content={activeBms.length ? undefined : () => null}
+                content={showBms ? undefined : () => null}
               />
               <Line type="monotone" dataKey={showPerf ? "perf" : "value"} name="Portfolio" stroke={C.rausch} strokeWidth={2.4} dot={false} connectNulls />
               {showPerf && activeBms.map((b) => (
@@ -2040,16 +2057,20 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
         )}
       </div>
 
-      <div className="fc-bmrow">
+      <div className={`fc-bmrow ${!showPerf ? "dim" : ""}`}>
         {BENCHMARKS.map((b) => {
           const on = benchmarks.includes(b.id);
           return (
-            <button key={b.id} className={`fc-bm ${on ? "on" : ""}`} onClick={() => onToggleBenchmark(b.id)} style={on ? { borderColor: b.color, color: b.color } : undefined}>
+            <button key={b.id} className={`fc-bm ${on ? "on" : ""}`} onClick={() => toggleBm(b.id)} style={on ? { borderColor: b.color, color: b.color } : undefined}>
               <span className="dot" style={{ background: on ? b.color : C.borderStrong }} />{b.label}
             </button>
           );
         })}
       </div>
+
+      {!showPerf && activeBms.length > 0 && (
+        <div className="fc-chart-note">Vergleichsindizes werden in der %-Ansicht angezeigt.</div>
+      )}
 
       {state.notes.length > 0 && (
         <div className="fc-chart-note">
@@ -2063,7 +2084,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
 /* ---------- Haupt-App ---------- */
 export default function App() {
   const [data, setData] = useState(() => loadLS(DATA_KEY, EMPTY));
-  const [settings, setSettings] = useState(() => loadLS(SETTINGS_KEY, { finnhubKey: "", currency: "EUR", theme: "system", tdKey: "", calcMode: "surplus", chartBenchmarks: ["sp500"] }));
+  const [settings, setSettings] = useState(() => loadLS(SETTINGS_KEY, { finnhubKey: "", currency: "EUR", theme: "system", tdKey: "", calcMode: "surplus", chartBenchmarks: ["sp500"], chartRange: "6M", chartMode: "value" }));
   CUR = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
   const [tab, setTab] = useState("home");
   const [costView, setCostView] = useState("fix");
@@ -2977,8 +2998,9 @@ export default function App() {
         .fc-chart-modes button{border:none;background:transparent;color:${C.muted};font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-chart-modes button.active{background:${C.canvas};color:${C.ink};box-shadow:${SHADOW};}
         .fc-chart-modes button:disabled{opacity:.45;cursor:not-allowed;}
+        .fc-bmrow.dim{opacity:.55;}
         .fc-ranges{display:flex;gap:6px;margin-top:12px;}
-        .fc-ranges button{flex:1;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12.5px;font-weight:600;padding:6px 0;border-radius:9999px;cursor:pointer;font-family:inherit;}
+        .fc-ranges button{flex:1;min-width:0;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12px;font-weight:600;padding:6px 0;border-radius:9999px;cursor:pointer;font-family:inherit;white-space:nowrap;}
         .fc-ranges button.active{background:${C.strong};color:${C.ink};border-color:${C.borderStrong};}
         .fc-chart-empty{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:13.5px;color:${C.muted};padding:0 14px;line-height:1.45;}
         .fc-bmrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;}
@@ -3471,6 +3493,10 @@ export default function App() {
                   const list = Array.isArray(s.chartBenchmarks) ? s.chartBenchmarks : [];
                   return { ...s, chartBenchmarks: list.includes(id) ? list.filter((x) => x !== id) : [...list, id] };
                 })}
+                range={settings.chartRange || "6M"}
+                mode={settings.chartMode || "value"}
+                onRange={(id) => setSettings((s) => ({ ...s, chartRange: id }))}
+                onMode={(m) => setSettings((s) => ({ ...s, chartMode: m }))}
               />
             </div>
           )}
