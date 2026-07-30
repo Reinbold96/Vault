@@ -2053,7 +2053,10 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
     }
     return sum;
   }, [view.first, view.last, eligible]);
-  const chg = view.first && view.last ? (view.last.gain - view.first.gain) + realizedWin : 0;
+  /* Wertänderung im Zeitraum: Buchgewinn der Wertpapiere + realisierte Gewinne
+     + Wertsteigerung der Immobilien. Cash-Zuflüsse zählen nicht als Gewinn. */
+  const propChg = view.first && view.last ? (view.last.props || 0) - (view.first.props || 0) : 0;
+  const chg = view.first && view.last ? (view.last.gain - view.first.gain) + realizedWin + propChg : 0;
   const chgPct = view.first && view.last && view.first.twr ? (view.last.twr / view.first.twr - 1) * 100 : 0;
   const hoverRow = hover != null && view.rows[hover] ? view.rows[hover] : null;
   const fmtDate = (d) => { const x = new Date(d); return `${String(x.getDate()).padStart(2, "0")}.${String(x.getMonth() + 1).padStart(2, "0")}.${String(x.getFullYear()).slice(2)}`; };
