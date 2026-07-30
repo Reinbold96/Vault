@@ -178,7 +178,7 @@ const TICKER_DOMAINS = {
 };
 
 /* Sichtbare Versionskennung - hilft beim Prüfen, ob das Gerät die neue Fassung hat */
-const APP_VERSION = "36 · 30.07.2026";
+const APP_VERSION = "37 · 30.07.2026";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -530,9 +530,13 @@ function propValueAt(i, d) {
   const start = i.buyDate || "";
   if ((i.valMode || "value") === "rate") {
     const r = (Number(i.growth) || 0) / 100;
-    if (!start) return base;
-    const y = Math.max(0, yearsBetween(start, d));
-    return base * Math.pow(1 + r, y);
+    if (start) {
+      const y = Math.max(0, yearsBetween(start, d));
+      return base * Math.pow(1 + r, y);
+    }
+    /* kein Kaufdatum: vom heutigen Wert mit derselben Rate zurückrechnen */
+    const now = Number(i.price) || base;
+    return now * Math.pow(1 + r, yearsBetween(todayIso(), d));
   }
   const now = Number(i.price) || base;
   if (!start || base <= 0 || now <= 0) return now;
@@ -1855,7 +1859,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
   ), [groups]);
   const cashGroups = useMemo(() => groups.filter((g) => g.type === "cash" && g.inChart), [groups]);
   /* Immobilien laufen ohne Kursquelle - sie brauchen nur ein Kaufdatum */
-  const propGroups = useMemo(() => groups.filter((g) => g.type === "immobilie" && g.inChart && g.ref.buyDate), [groups]);
+  const propGroups = useMemo(() => groups.filter((g) => g.type === "immobilie" && g.inChart), [groups]);
 
   const activeBms = BENCHMARKS.filter((b) => benchmarks.includes(b.id));
   const eligKey = eligible.map((g) => `${g.gkey}|${g.lots.map((l) => `${l.qty}@${l.buyDate}`).join("+")}|${g.sells.map((s) => `${s.qty}@${s.date}`).join("+")}`).join(",");
@@ -1978,11 +1982,15 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
           const r = ccy === cur ? 1 : ((fxFilled[ccy] && fxFilled[ccy][d]) ?? (fxRates && fxRates[ccy]) ?? 1);
           cash += cashAtDate(g.ref, d) * r;
         }
-        /* Immobilien: eigener Wertverlauf ab Kaufdatum, ohne Kursquelle */
+        /* Immobilien: eigener Wertverlauf, ohne Kursquelle. Sie gehen als Pseudo-Position
+           in die Renditekette ein, damit die %-Kurve ihr Wachstum ebenfalls zeigt. */
         let props = 0;
         for (const g of propGroups) {
-          if ((g.ref.buyDate || "") > d) continue;
-          props += propValueAt(g.ref, d);
+          if (g.ref.buyDate && g.ref.buyDate > d) continue;
+          const pv = propValueAt(g.ref, d);
+          if (!(pv > 0)) continue;
+          props += pv;
+          px["prop:" + g.gkey] = { p: pv, qty: 1 };
         }
         if (!any && cash === 0 && props === 0) continue;
         if (prev) {
