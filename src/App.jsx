@@ -8,6 +8,7 @@ import {
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap,
   Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown, Check, Info,
   Search, Percent, ArrowDownLeft, ArrowUpRight, Tag, Pencil, Trash2,
+  ArrowDownWideNarrow, Shapes,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -514,6 +515,30 @@ function cashAtDate(i, d) {
   return cashAmount(i) - flows.filter((f) => (f.d || "") > d).reduce((a, f) => a + (Number(f.amt) || 0), 0);
 }
 
+/* Jahre zwischen zwei ISO-Tagen (Bruchteile erlaubt) */
+const yearsBetween = (a, b) => (new Date(b) - new Date(a)) / (365.2425 * 86400000);
+
+/* Wert einer Immobilie an einem Stichtag.
+   Modus "rate": ab Kaufdatum mit der eingegebenen Rate p. a. verzinst.
+   Modus "value": glatte Entwicklung vom Kaufpreis zum heute eingetragenen Wert
+   (implizite Jahresrate) - so entsteht auch ohne Rate ein plausibler Verlauf. */
+function propValueAt(i, d) {
+  const base = Number(i.buyPrice) || Number(i.price) || 0;
+  const start = i.buyDate || "";
+  if ((i.valMode || "value") === "rate") {
+    const r = (Number(i.growth) || 0) / 100;
+    if (!start) return base;
+    const y = Math.max(0, yearsBetween(start, d));
+    return base * Math.pow(1 + r, y);
+  }
+  const now = Number(i.price) || base;
+  if (!start || base <= 0 || now <= 0) return now;
+  const yTot = yearsBetween(start, todayIso());
+  if (yTot <= 0) return now;
+  const y = Math.min(Math.max(0, yearsBetween(start, d)), yTot);
+  return base * Math.pow(now / base, y / yTot);
+}
+
 /* Alle Positionen zu Gruppen zusammenfassen */
 function buildGroups(investments, sells, fx) {
   const map = new Map();
@@ -531,6 +556,8 @@ function buildGroups(investments, sells, fx) {
   const out = [];
   for (const g of map.values()) {
     g.price = Number(g.ref.price) || 0;
+    /* Immobilien mit Wachstumsrate wachsen mit der Zeit weiter */
+    if (g.type === "immobilie") g.price = propValueAt(g.ref, todayIso());
     g.inChart = g.lots.some((l) => l.inChart !== false);
     if (g.type === "cash") {
       g.qty = 1;
@@ -998,14 +1025,31 @@ function InvestForm({ initial, onSave, finnhubKey }) {
             </Field>
           )}
           {f.type === "immobilie" ? (
-            <div className="fc-row2">
-              <Field label={`Aktueller Wert (${curSym()})`}>
-                <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
+            <>
+              <div className="fc-row2">
+                <Field label={`Kaufpreis (${curSym()})`}>
+                  <NumInput value={f.buyPrice} onChange={(v) => setF({ ...f, buyPrice: v })} placeholder="0" />
+                </Field>
+                <Field label="Kaufdatum">
+                  <input type="date" value={f.buyDate || ""} onChange={(e) => setF({ ...f, buyDate: e.target.value })} />
+                </Field>
+              </div>
+              <Field label="Heutiger Wert">
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Btn kind={(f.valMode || "value") === "value" ? "primary" : "ghost"} onClick={() => setF({ ...f, valMode: "value" })} style={{ flex: 1 }}>Betrag</Btn>
+                  <Btn kind={f.valMode === "rate" ? "primary" : "ghost"} onClick={() => setF({ ...f, valMode: "rate" })} style={{ flex: 1 }}>Rate</Btn>
+                </div>
               </Field>
-              <Field label={`Kaufpreis (${curSym()})`}>
-                <NumInput value={f.buyPrice} onChange={(v) => setF({ ...f, buyPrice: v })} placeholder="0" />
-              </Field>
-            </div>
+              {f.valMode === "rate" ? (
+                <Field label="Wertsteigerung (% pro Jahr)">
+                  <NumInput value={f.growth} onChange={(v) => setF({ ...f, growth: v })} placeholder="2" />
+                </Field>
+              ) : (
+                <Field label={`Aktueller Wert (${curSym()})`}>
+                  <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
+                </Field>
+              )}
+            </>
           ) : (
             <Field label={`Betrag (${f.ccy || CUR})`}>
               <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
@@ -1013,7 +1057,10 @@ function InvestForm({ initial, onSave, finnhubKey }) {
           )}
           {f.type === "immobilie" && (
             <div style={{ fontSize: 13, color: C.muted, margin: "-2px 0 12px", lineHeight: 1.4 }}>
-              Kaufpreis ist optional – er dient nur der Gewinn-/Verlustanzeige.
+              {f.valMode === "rate"
+                ? "Der Wert wächst ab dem Kaufdatum jährlich mit dieser Rate."
+                : "Zwischen Kaufpreis und heutigem Wert wird gleichmässig interpoliert."}
+              {!f.buyDate && " Für den Verlaufs-Chart ist ein Kaufdatum nötig."}
             </div>
           )}
           {f.type === "cash" && (f.ccy || CUR) !== CUR && (
@@ -1023,11 +1070,33 @@ function InvestForm({ initial, onSave, finnhubKey }) {
           )}
           <button type="button" className="fc-check" onClick={() => setF({ ...f, inChart: f.inChart === false })}>
             <span className={`box ${f.inChart !== false ? "on" : ""}`}>{f.inChart !== false && <Check size={13} strokeWidth={3} />}</span>
-            <span>{f.type === "cash" ? "Im Verlaufs-Chart anzeigen" : "Im Verlaufs-Chart anzeigen (nur mit Kurshistorie möglich)"}</span>
+            <span>Im Verlaufs-Chart anzeigen</span>
           </button>
           <Btn
-            disabled={!f.name || !f.price}
-            onClick={() => onSave({ ...f, symbol: "", qty: 1, ccy: f.type === "cash" ? (f.ccy || CUR) : undefined, price: Number(f.price) || 0, buyPrice: f.type === "cash" ? Number(f.price) || 0 : Number(f.buyPrice) || Number(f.price) || 0 })}
+            disabled={!f.name || (f.type === "immobilie" ? (f.valMode === "rate" ? !f.buyPrice : !f.price) : !f.price)}
+            onClick={() => {
+              const isProp = f.type === "immobilie";
+              const valMode = isProp ? (f.valMode === "rate" ? "rate" : "value") : undefined;
+              const base = Number(f.buyPrice) || Number(f.price) || 0;
+              const growth = Number(f.growth) || 0;
+              /* Bei "Rate" ergibt sich der heutige Wert aus Kaufpreis, Datum und Rate */
+              const price = isProp
+                ? (valMode === "rate"
+                    ? propValueAt({ buyPrice: base, buyDate: f.buyDate, valMode: "rate", growth }, todayIso())
+                    : Number(f.price) || base)
+                : Number(f.price) || 0;
+              onSave({
+                ...f,
+                symbol: "",
+                qty: 1,
+                ccy: f.type === "cash" ? (f.ccy || CUR) : undefined,
+                valMode,
+                growth: isProp ? growth : undefined,
+                buyDate: isProp ? (f.buyDate || "") : f.buyDate,
+                price: Number(price.toFixed(2)),
+                buyPrice: f.type === "cash" ? Number(f.price) || 0 : base,
+              });
+            }}
           >Speichern</Btn>
         </>
       ) : (
@@ -1774,6 +1843,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
   const setRange = onRange;
   const setMode = onMode;
   const [hover, setHover] = useState(null);
+  const chartBox = useRef(null);
   const [state, setState] = useState({ loading: false, rows: [], notes: [], err: "" });
 
   /* Gruppen mit Kurshistorie, Kaufdatum und Chart-Häkchen */
@@ -1781,23 +1851,29 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
     HIST_TYPES.includes(g.type) && g.inChart && (g.ref.symbol || g.ref.coinId) && g.lots.some((l) => l.buyDate && l.inChart !== false)
   ), [groups]);
   const cashGroups = useMemo(() => groups.filter((g) => g.type === "cash" && g.inChart), [groups]);
+  /* Immobilien laufen ohne Kursquelle - sie brauchen nur ein Kaufdatum */
+  const propGroups = useMemo(() => groups.filter((g) => g.type === "immobilie" && g.inChart && g.ref.buyDate), [groups]);
 
   const activeBms = BENCHMARKS.filter((b) => benchmarks.includes(b.id));
   const eligKey = eligible.map((g) => `${g.gkey}|${g.lots.map((l) => `${l.qty}@${l.buyDate}`).join("+")}|${g.sells.map((s) => `${s.qty}@${s.date}`).join("+")}`).join(",");
   const cashKey = cashGroups.map((g) => `${g.gkey}|${cashAmount(g.ref)}|${g.ref.ccy || cur}|${(g.ref.flows || []).length}`).join(",");
+  const propKey = propGroups.map((g) => `${g.gkey}|${g.ref.buyDate}|${g.ref.valMode || "value"}|${g.ref.growth || 0}|${g.ref.price}|${g.ref.buyPrice}`).join(",");
   const bmKey = benchmarks.join(",");
 
   useEffect(() => {
     let cancelled = false;
     async function build() {
-      if (!eligible.length && !cashGroups.length) { setState({ loading: false, rows: [], notes: [], err: "" }); return; }
+      if (!eligible.length && !cashGroups.length && !propGroups.length) { setState({ loading: false, rows: [], notes: [], err: "" }); return; }
       setState((s) => ({ ...s, loading: true, err: "" }));
       const notes = [];
       const hist = loadHist();
       const today = todayIso();
-      const buyDates = eligible.flatMap((g) => g.lots.map((l) => l.buyDate).filter(Boolean));
+      const buyDates = [
+        ...eligible.flatMap((g) => g.lots.map((l) => l.buyDate).filter(Boolean)),
+        ...propGroups.map((g) => g.ref.buyDate).filter(Boolean),
+      ];
       const earliest = buyDates.length ? buyDates.sort()[0] : addDays(today, -180);
-      const startAll = earliest < addDays(today, -1825) ? addDays(today, -1825) : earliest;
+      const startAll = earliest < addDays(today, -3650) ? addDays(today, -3650) : earliest;
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
       /* --- benötigte Serien laden (Tages-Cache) --- */
@@ -1899,7 +1975,13 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
           const r = ccy === cur ? 1 : ((fxFilled[ccy] && fxFilled[ccy][d]) ?? (fxRates && fxRates[ccy]) ?? 1);
           cash += cashAtDate(g.ref, d) * r;
         }
-        if (!any && cash === 0) continue;
+        /* Immobilien: eigener Wertverlauf ab Kaufdatum, ohne Kursquelle */
+        let props = 0;
+        for (const g of propGroups) {
+          if ((g.ref.buyDate || "") > d) continue;
+          props += propValueAt(g.ref, d);
+        }
+        if (!any && cash === 0 && props === 0) continue;
         if (prev) {
           let num = 0, den = 0;
           for (const k of Object.keys(prev.px)) {
@@ -1910,7 +1992,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
           }
           if (den > 0) twr *= num / den;
         }
-        const row = { d, value: assets + cash, assets, cash, invested, gain: assets - invested, twr };
+        const row = { d, value: assets + cash + props, assets, cash, props, invested, gain: assets - invested, twr };
         for (const b of activeBms) {
           const ser = filled[`td:${b.sym}`];
           row["bm_" + b.id] = ser && ser[d] != null ? ser[d] : null;
@@ -1923,7 +2005,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
     }
     build();
     return () => { cancelled = true; };
-  }, [eligKey, cashKey, bmKey, cur, tdKey]);
+  }, [eligKey, cashKey, propKey, bmKey, cur, tdKey]);
 
   /* --- Zeitraum zuschneiden, Benchmarks auf Startpunkt normalisieren --- */
   const view = useMemo(() => {
@@ -1982,6 +2064,14 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
     const vals = view.rows.map((x) => x.value).filter((v) => v != null);
     return vals.length ? Math.max(...vals) - Math.min(...vals) : 0;
   }, [view.rows]);
+  /* Tippen ausserhalb des Charts schliesst die Werte-Box wieder */
+  useEffect(() => {
+    if (hover == null) return;
+    const onDown = (e) => { if (!chartBox.current || !chartBox.current.contains(e.target)) setHover(null); };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [hover]);
+
   const nf = (v, dec) => v.toLocaleString(CUR === "CHF" ? "de-CH" : "de-DE", { minimumFractionDigits: dec, maximumFractionDigits: dec });
   const axisVal = (v) => {
     const a = Math.abs(v);
@@ -2009,8 +2099,8 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
           ) : null}
         </div>
         <div className="fc-chart-modes">
-          <button className={!showPerf ? "active" : ""} onClick={() => setMode("value")}>Wert</button>
-          <button className={showPerf ? "active" : ""} onClick={() => setMode("perf")}>%</button>
+          <button className={!showPerf ? "active" : ""} onClick={() => setMode("value")} title={`Wert in ${CUR}`} aria-label={`Wert in ${CUR}`}>{curSym()}</button>
+          <button className={showPerf ? "active" : ""} onClick={() => setMode("perf")} title="Entwicklung in Prozent" aria-label="Entwicklung in Prozent">%</button>
         </div>
       </div>
 
@@ -2020,7 +2110,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
         ))}
       </div>
 
-      <div style={{ width: "100%", height: 236, marginTop: 2 }}>
+      <div ref={chartBox} style={{ width: "100%", height: 236, marginTop: 2 }}>
         {state.loading ? (
           <div className="fc-chart-empty">Kursverlauf wird geladen …</div>
         ) : view.rows.length < 2 ? (
@@ -2032,13 +2122,14 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
               margin={{ top: 6, right: 10, bottom: 0, left: 0 }}
               onMouseMove={(s) => setHover(s && s.activeTooltipIndex != null ? s.activeTooltipIndex : null)}
               onTouchMove={(s) => setHover(s && s.activeTooltipIndex != null ? s.activeTooltipIndex : null)}
+              onClick={(s) => setHover(s && s.activeTooltipIndex != null ? s.activeTooltipIndex : null)}
               onMouseLeave={() => setHover(null)}
-              onTouchEnd={() => setHover(null)}
             >
               <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
               <XAxis dataKey="d" tickFormatter={fmtDate} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={38} />
               <YAxis domain={["auto", "auto"]} allowDecimals={false} tickFormatter={(v) => (showPerf ? `${Math.round(v)} %` : masked ? "" : axisVal(v))} width={showPerf ? 46 : masked ? 10 : 58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} />
               <Tooltip
+                active={hover != null}
                 labelFormatter={fmtDate}
                 formatter={(v, n) => [showPerf ? `${Number(v).toFixed(1).replace(".", ",")} %` : masked ? MASK : eurFull(v), n]}
                 contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 12.5, boxShadow: SHADOW }}
@@ -2888,7 +2979,9 @@ export default function App() {
         .fc-sectiontitle .fc-sum{font-size:14px;font-weight:500;color:${C.muted};font-variant-numeric:tabular-nums;}
         .fc-kpis{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 16px 4px;}
         .fc-kpi{background:${C.soft};border-radius:14px;padding:14px 16px;}
-        .fc-kpi .l{font-size:13px;line-height:1.23;color:${C.muted};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        /* feste Labelhöhe: Zahlen stehen in allen Kacheln auf derselben Linie,
+           auch wenn ein Label einen Button oder Chip enthält */
+        .fc-kpi .l{display:flex;align-items:center;min-height:26px;font-size:13px;line-height:1.23;color:${C.muted};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-kpi .v{font-size:21px;font-weight:700;line-height:1.3;margin-top:2px;font-variant-numeric:tabular-nums;color:${C.ink};}
         .fc-flowbar{display:flex;height:20px;border-radius:9999px;overflow:hidden;gap:2px;}
         .fc-flowbar div{min-width:4px;}
@@ -3061,6 +3154,12 @@ export default function App() {
         .fc-chip{display:inline-flex;align-items:center;gap:4px;border:none;background:${C.strong};color:${C.ink};font-size:11px;font-weight:600;padding:4px 9px;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-chip:active{background:${C.borderStrong};}
         .fc-seg{display:flex;background:${C.soft};border-radius:9999px;padding:4px;margin:14px 16px 4px;gap:4px;}
+        .fc-invest-tools{display:flex;align-items:center;gap:8px;margin:14px 16px 4px;}
+        .fc-invest-tools .fc-search{margin:0;flex:1;min-width:0;}
+        .fc-invest-tools .fc-seg{margin:0;height:44px;align-items:center;flex:1;}
+        .fc-invest-tools .fc-seg.compact{flex:none;}
+        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 14px;color:${C.mutedSoft};}
+        .fc-seg-icons button.active{color:${C.ink};}
         .fc-seg button{flex:1;border:none;background:transparent;color:${C.muted};font-size:14px;font-weight:600;padding:9px 0;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-seg button.active{background:${C.canvas};color:${C.ink};box-shadow:${SHADOW};}
         .fc-forecast-row{display:flex;justify-content:space-between;align-items:baseline;padding:9px 0;border-bottom:1px solid ${C.hairlineSoft};font-size:15px;}
@@ -3550,13 +3649,21 @@ export default function App() {
             </div>
           )}
           {groups.length > 1 && (
-            <div className="fc-seg" role="tablist">
-              <button className={investSort === "size" ? "active" : ""} onClick={() => setInvestSort("size")}>Grösse</button>
-              <button className={investSort === "type" ? "active" : ""} onClick={() => setInvestSort("type")}>Art</button>
-              <button className={investSort === "day" ? "active" : ""} onClick={() => setInvestSort("day")}>Tages-%</button>
+            <div className="fc-invest-tools">
+              {groups.length > 7 && <SearchBar value={search} onChange={setSearch} placeholder="Position suchen" />}
+              <div className={`fc-seg fc-seg-icons ${groups.length > 7 ? "compact" : ""}`} role="tablist">
+                <button className={investSort === "size" ? "active" : ""} onClick={() => setInvestSort("size")} title="Nach Grösse" aria-label="Nach Grösse sortieren">
+                  <ArrowDownWideNarrow size={17} strokeWidth={2} />
+                </button>
+                <button className={investSort === "type" ? "active" : ""} onClick={() => setInvestSort("type")} title="Nach Art" aria-label="Nach Art sortieren">
+                  <Shapes size={17} strokeWidth={2} />
+                </button>
+                <button className={investSort === "day" ? "active" : ""} onClick={() => setInvestSort("day")} title="Nach Tagesveränderung" aria-label="Nach Tagesveränderung sortieren">
+                  <Percent size={17} strokeWidth={2} />
+                </button>
+              </div>
             </div>
           )}
-          {groups.length > 7 && <SearchBar value={search} onChange={setSearch} placeholder="Position suchen" />}
           {priceStatus && <div className="fc-status">{priceStatus}</div>}
           {groups.length === 0
             ? <Empty text="Erfasse Aktien, ETFs und Krypto – der Ticker reicht, Name und Logo kommen automatisch. Auch Immobilien und Cash-Konten lassen sich als Position anlegen." action={<Btn small onClick={() => setSheet({ type: "invest" })}>Position hinzufügen</Btn>} />
