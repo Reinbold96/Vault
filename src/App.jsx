@@ -3159,9 +3159,9 @@ export default function App() {
         .fc-seg{display:flex;background:${C.soft};border-radius:9999px;padding:4px;margin:14px 16px 4px;gap:4px;}
         .fc-invest-tools{display:flex;align-items:center;gap:8px;margin:14px 16px 4px;}
         .fc-invest-tools .fc-search{margin:0;flex:1;min-width:0;}
-        .fc-invest-tools .fc-seg{margin:0;height:44px;align-items:center;flex:1;}
+        .fc-invest-tools .fc-seg{margin:0;height:44px;align-items:center;flex:1;gap:6px;}
         .fc-invest-tools .fc-seg.compact{flex:none;}
-        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 12px;color:${C.muted};}
+        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;height:36px;min-width:52px;padding:0;color:${C.muted};}
         .fc-seg-icons button.active{color:${C.ink};}
         .fc-seg button{flex:1;border:none;background:transparent;color:${C.muted};font-size:14px;font-weight:600;padding:9px 0;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-seg button.active{background:${C.canvas};color:${C.ink};box-shadow:${SHADOW};}
@@ -3653,7 +3653,7 @@ export default function App() {
           )}
           {groups.length > 1 && (
             <div className="fc-invest-tools">
-              {groups.length > 7 && <SearchBar value={search} onChange={setSearch} placeholder="Position suchen" />}
+              {groups.length > 7 && <SearchBar value={search} onChange={setSearch} placeholder="Suchen" />}
               <div className={`fc-seg fc-seg-icons ${groups.length > 7 ? "compact" : ""}`} role="tablist">
                 <button className={investSort === "size" ? "active" : ""} onClick={() => setInvestSort("size")} title="Nach Grösse" aria-label="Nach Grösse sortieren">
                   <ArrowDownWideNarrow size={18} strokeWidth={1.7} />
