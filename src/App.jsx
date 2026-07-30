@@ -1767,7 +1767,7 @@ const histKeyOf = (g, cur) => g.type === "krypto"
   ? `cg:${g.ref.coinId || (g.ref.symbol || "").toUpperCase()}:${cur}`
   : `td:${(g.ref.symbol || "").toUpperCase()}`;
 
-function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBenchmark, range: rangeProp, mode: modeProp, onRange, onMode }) {
+function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBenchmark, range: rangeProp, mode: modeProp, onRange, onMode, masked = false }) {
   /* Zeitraum und Darstellung liegen in den Settings, damit die Wahl einen App-Neustart ueberlebt */
   const range = RANGES.some((r) => r.id === rangeProp) ? rangeProp : "6M";
   const mode = modeProp === "perf" ? "perf" : "value";
@@ -1996,7 +1996,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
     <Card style={{ paddingBottom: 12 }}>
       <div className="fc-chart-head">
         <div>
-          <div className="val">{hoverRow ? eur(hoverRow.value) : view.last ? eur(view.last.value) : "–"}</div>
+          <div className="val">{masked ? MASK : hoverRow ? eur(hoverRow.value) : view.last ? eur(view.last.value) : "–"}</div>
           {hoverRow ? (
             <div className="chg" style={{ color: C.muted }}>
               {fmtDate(hoverRow.d)}
@@ -2004,7 +2004,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
             </div>
           ) : view.first && view.last ? (
             <div className="chg" style={{ color: chg >= 0 ? C.positive : C.error }}>
-              {chg >= 0 ? "+" : ""}{eur(chg)} · {chg >= 0 ? "+" : ""}{chgPct.toFixed(1).replace(".", ",")} %
+              {!masked && <>{chg >= 0 ? "+" : ""}{eur(chg)} · </>}{chg >= 0 ? "+" : ""}{chgPct.toFixed(1).replace(".", ",")} %
             </div>
           ) : null}
         </div>
@@ -2037,10 +2037,10 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
             >
               <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
               <XAxis dataKey="d" tickFormatter={fmtDate} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={38} />
-              <YAxis domain={["auto", "auto"]} allowDecimals={false} tickFormatter={(v) => (showPerf ? `${Math.round(v)} %` : axisVal(v))} width={showPerf ? 46 : 58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} />
+              <YAxis domain={["auto", "auto"]} allowDecimals={false} tickFormatter={(v) => (showPerf ? `${Math.round(v)} %` : masked ? "" : axisVal(v))} width={showPerf ? 46 : masked ? 10 : 58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} />
               <Tooltip
                 labelFormatter={fmtDate}
-                formatter={(v, n) => [showPerf ? `${Number(v).toFixed(1).replace(".", ",")} %` : eurFull(v), n]}
+                formatter={(v, n) => [showPerf ? `${Number(v).toFixed(1).replace(".", ",")} %` : masked ? MASK : eurFull(v), n]}
                 contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 12.5, boxShadow: SHADOW }}
                 labelStyle={{ color: C.muted }}
                 itemStyle={{ color: C.ink }}
@@ -3468,15 +3468,28 @@ export default function App() {
       {tab === "invest" && (
         <>
           <div className="fc-kpis">
-            <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v">{eurM(netWorth)}</div></div>
+            <div className="fc-kpi">
+              <div className="l" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                <span>Portfoliowert</span>
+                <button
+                  className="fc-eye"
+                  onClick={() => setMasked((m) => !m)}
+                  aria-label={masked ? "Beträge anzeigen" : "Beträge verbergen"}
+                  title={masked ? "Beträge anzeigen" : "Beträge verbergen"}
+                >
+                  {masked ? <EyeOff size={14} strokeWidth={1.9} /> : <Eye size={14} strokeWidth={1.9} />}
+                </button>
+              </div>
+              <div className="v">{eurM(netWorth)}</div>
+            </div>
             <div className="fc-kpi">
               <div className="l">Gewinn / Verlust</div>
-              <div className="v" style={{ color: gain >= 0 ? C.positive : C.error }}>{gain >= 0 ? "+" : ""}{eur(gain)}</div>
+              <div className="v" style={{ color: masked ? C.ink : gain >= 0 ? C.positive : C.error }}>{masked ? MASK : `${gain >= 0 ? "+" : ""}${eur(gain)}`}</div>
               {(realizedTotal !== 0 || divTotal12 > 0) && (
                 <div style={{ fontSize: 12.5, marginTop: 3, color: C.muted }}>
-                  {realizedTotal !== 0 && <>realisiert {realizedTotal >= 0 ? "+" : ""}{eur(realizedTotal)}</>}
+                  {realizedTotal !== 0 && <>realisiert {masked ? MASK : `${realizedTotal >= 0 ? "+" : ""}${eur(realizedTotal)}`}</>}
                   {realizedTotal !== 0 && divTotal12 > 0 && " · "}
-                  {divTotal12 > 0 && <>Ausschüttung {eur(divTotal12)}</>}
+                  {divTotal12 > 0 && <>Ausschüttung {eurM(divTotal12)}</>}
                 </div>
               )}
             </div>
@@ -3493,6 +3506,7 @@ export default function App() {
                   const list = Array.isArray(s.chartBenchmarks) ? s.chartBenchmarks : [];
                   return { ...s, chartBenchmarks: list.includes(id) ? list.filter((x) => x !== id) : [...list, id] };
                 })}
+                masked={masked}
                 range={settings.chartRange || "6M"}
                 mode={settings.chartMode || "value"}
                 onRange={(id) => setSettings((s) => ({ ...s, chartRange: id }))}
@@ -3525,17 +3539,17 @@ export default function App() {
                 const showPct = !isCash && g.cost > 0;
                 const pct = showPct ? (g.unreal / g.cost) * 100 : 0;
                 const subParts = isCash
-                  ? (ccy !== CUR ? [money(cashAmount(g.ref), ccy), `Kurs ${(fxRates[ccy] || 1).toFixed(4).replace(".", ",")}`] : ["Cash-Konto"])
+                  ? (ccy !== CUR ? [masked ? MASK : money(cashAmount(g.ref), ccy), `Kurs ${(fxRates[ccy] || 1).toFixed(4).replace(".", ",")}`] : ["Cash-Konto"])
                   : g.type === "immobilie"
                     ? ["Immobilie"]
                     : g.qty > 0
                       ? [
                           `${fmtQty(g.qty)} ${g.type === "rohstoff" ? unit : "Stk"}`,
-                          eur(g.price),
+                          masked ? MASK : eur(g.price),
                           g.lots.length > 1 ? `${g.lots.length} Käufe` : null,
                           g.sells.length ? `${g.sells.length} verkauft` : null,
                         ]
-                      : ["verkauft", `realisiert ${g.realized >= 0 ? "+" : ""}${eur(g.realized)}`];
+                      : ["verkauft", `realisiert ${masked ? MASK : `${g.realized >= 0 ? "+" : ""}${eur(g.realized)}`}`];
                 return (
                   <ListItem key={g.gkey}
                     lead={isValue
@@ -3547,7 +3561,7 @@ export default function App() {
                     sub={<Sub parts={subParts} />}
                     value={
                       <span>
-                        {eur(g.value)}<br />
+                        {eurM(g.value)}<br />
                         <span className="fc-gain" style={{ color: showPct ? (g.unreal >= 0 ? C.positive : C.error) : C.mutedSoft }}>
                           {showPct ? `${g.unreal >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} %` : "–"}
                         </span>
