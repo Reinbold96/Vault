@@ -2090,7 +2090,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
       <div className="fc-chart-head">
         {/* Wert und Veränderung teilen eine Zeile - spart eine Zeile Höhe */}
         <div className="fc-chart-val">
-          <span className="val">{masked ? MASK : hoverRow ? eur(hoverRow.value) : view.last ? eur(view.last.value) : "–"}</span>
+          <span className={`val ${masked ? "mask" : ""}`}>{masked ? MASK : hoverRow ? eur(hoverRow.value) : view.last ? eur(view.last.value) : "–"}</span>
           {hoverRow ? (
             <span className="chg" style={{ color: C.muted }}>
               {fmtDate(hoverRow.d)}
@@ -2114,7 +2114,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
         ))}
       </div>
 
-      <div ref={chartBox} style={{ width: "100%", height: 236, marginTop: 2 }}>
+      <div ref={chartBox} style={{ width: "100%", height: 236, marginTop: 8 }}>
         {state.loading ? (
           <div className="fc-chart-empty">Kursverlauf wird geladen …</div>
         ) : view.rows.length < 2 ? (
@@ -2123,7 +2123,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
           <ResponsiveContainer>
             <LineChart
               data={view.rows}
-              margin={{ top: 6, right: 10, bottom: 0, left: 0 }}
+              margin={{ top: 12, right: 10, bottom: 0, left: 0 }}
               onMouseMove={(s) => setHover(s && s.activeTooltipIndex != null ? s.activeTooltipIndex : null)}
               onTouchMove={(s) => setHover(s && s.activeTooltipIndex != null ? s.activeTooltipIndex : null)}
               onClick={(s) => setHover(s && s.activeTooltipIndex != null ? s.activeTooltipIndex : null)}
@@ -3035,7 +3035,8 @@ export default function App() {
         .fc-item:last-child{border-bottom:none;padding-bottom:2px;}
         .fc-item:first-child{padding-top:2px;}
         .fc-item-main{flex:1;cursor:pointer;min-width:0;}
-        .fc-item-title{font-size:16px;font-weight:600;line-height:1.25;color:${C.ink};}
+        /* lange Namen auf zwei Zeilen begrenzen, damit die Zeilenhöhen ruhig bleiben */
+        .fc-item-title{font-size:16px;font-weight:600;line-height:1.25;color:${C.ink};overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
         .fc-item-sub{font-size:14px;line-height:1.43;color:${C.muted};margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-root .sep{color:${C.borderStrong};padding:0 3px;}
         .fc-inforow{display:flex;align-items:center;gap:8px;margin:-2px 0 0;}
@@ -3165,16 +3166,21 @@ export default function App() {
         .fc-lock-inner .err{font-size:13px;color:${C.error};margin-top:12px;}
         .fc-lock-alt{margin-top:14px;background:none;border:none;color:${C.mutedSoft};font-size:13px;text-decoration:underline;cursor:pointer;font-family:inherit;}
         .fc-chart-head{display:flex;justify-content:space-between;align-items:center;gap:12px;}
-        .fc-chart-val{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;min-width:0;}
+        /* Wert + Veränderung immer auf einer Zeile: die Veränderung darf schrumpfen,
+           der Wert bleibt vollständig lesbar. */
+        .fc-chart-val{display:flex;align-items:baseline;gap:8px;min-width:0;flex:1;overflow:hidden;}
+        .fc-chart-val .val{flex:none;white-space:nowrap;}
+        .fc-chart-val .chg{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-chart-head .lbl{font-size:13px;color:${C.muted};}
-        .fc-chart-head .val{font-size:26px;font-weight:700;letter-spacing:-0.4px;font-variant-numeric:tabular-nums;color:${C.ink};}
+        .fc-chart-head .val{font-size:24px;font-weight:700;letter-spacing:-0.4px;font-variant-numeric:tabular-nums;color:${C.ink};}
+        .fc-chart-head .val.mask{font-size:19px;letter-spacing:1px;}
         .fc-chart-head .chg{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;}
         .fc-chart-modes{display:flex;background:${C.soft};border-radius:9999px;padding:3px;gap:2px;flex-shrink:0;}
         .fc-chart-modes button{display:inline-flex;align-items:center;justify-content:center;height:28px;min-width:34px;border:none;background:transparent;color:${C.muted};font-size:12.5px;font-weight:600;padding:0 11px;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-chart-modes button.active{background:${C.canvas};color:${C.ink};box-shadow:${SHADOW};}
         .fc-chart-modes button:disabled{opacity:.45;cursor:not-allowed;}
         .fc-bmrow.dim{opacity:.55;}
-        .fc-ranges{display:flex;gap:6px;margin-top:12px;}
+        .fc-ranges{display:flex;gap:6px;margin:12px 0 4px;}
         .fc-ranges button{flex:1;min-width:0;height:34px;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12px;font-weight:600;padding:0;border-radius:9999px;cursor:pointer;font-family:inherit;white-space:nowrap;}
         .fc-ranges button.active{background:${C.strong};color:${C.ink};border-color:${C.borderStrong};}
         .fc-chart-empty{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:13.5px;color:${C.muted};padding:0 14px;line-height:1.45;}
@@ -3202,11 +3208,11 @@ export default function App() {
         .fc-chip:active{background:${C.borderStrong};}
         .fc-seg{display:flex;background:${C.soft};border-radius:9999px;padding:4px;margin:14px 16px 4px;gap:4px;}
         .fc-invest-tools{display:flex;align-items:center;gap:8px;margin:14px 16px 4px;}
-        .fc-invest-tools .fc-search{margin:0;flex:1 1 50%;min-width:0;}
+        .fc-invest-tools .fc-search{margin:0;flex:1 1 60%;min-width:0;}
         /* Schieber nimmt den grösseren Teil der Zeile: die Symbol-Buttons werden damit
            so breit wie die Zeitraum-Buttons im Chart, bei gleichem Abstand (6px) */
-        .fc-invest-tools .fc-seg{margin:0;height:34px;padding:3px;align-items:center;flex:1 1 50%;gap:6px;}
-        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;flex:1;height:28px;min-width:40px;padding:0;color:${C.muted};}
+        .fc-invest-tools .fc-seg{margin:0;height:34px;padding:3px;align-items:center;flex:1 1 40%;gap:4px;}
+        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;flex:1;height:28px;min-width:36px;padding:0;color:${C.muted};}
         .fc-seg-icons button.active{color:${C.ink};}
         .fc-seg button{flex:1;border:none;background:transparent;color:${C.muted};font-size:14px;font-weight:600;padding:9px 0;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-seg button.active{background:${C.canvas};color:${C.ink};box-shadow:${SHADOW};}
