@@ -2084,11 +2084,13 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
 /* ---------- Haupt-App ---------- */
 export default function App() {
   const [data, setData] = useState(() => loadLS(DATA_KEY, EMPTY));
-  const [settings, setSettings] = useState(() => loadLS(SETTINGS_KEY, { finnhubKey: "", currency: "EUR", theme: "system", tdKey: "", calcMode: "surplus", chartBenchmarks: ["sp500"], chartRange: "6M", chartMode: "value" }));
+  const [settings, setSettings] = useState(() => loadLS(SETTINGS_KEY, { finnhubKey: "", currency: "EUR", theme: "system", tdKey: "", calcMode: "surplus", chartBenchmarks: ["sp500"], chartRange: "6M", chartMode: "value", investSort: "size" }));
   CUR = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
   const [tab, setTab] = useState("home");
   const [costView, setCostView] = useState("fix");
-  const [investSort, setInvestSort] = useState("size");
+  /* Sortierung der Positionsliste liegt in den Settings, damit sie erhalten bleibt */
+  const investSort = ["size", "type", "day"].includes(settings.investSort) ? settings.investSort : "size";
+  const setInvestSort = (v) => setSettings((x) => ({ ...x, investSort: v }));
   const [sheet, setSheet] = useState(null);
   const [priceStatus, setPriceStatus] = useState("");
   const [priceFailIds, setPriceFailIds] = useState([]);
@@ -2271,6 +2273,14 @@ export default function App() {
     () => buildGroups(data.investments, data.sells || [], fxRates),
     [data.investments, data.sells, fxRates],
   );
+  /* Tagesveränderung einer Gruppe: kommt vom Kursanbieter, gilt pro Symbol.
+     Nur verwenden, wenn sie zum aktuellen Kursstand passt (max. 36 h alt). */
+  const dayPctOf = (g) => {
+    const r = g && g.ref;
+    if (!r || typeof r.dayPct !== "number" || !isFinite(r.dayPct)) return null;
+    if (r.dayPctAt && Date.now() - r.dayPctAt > 36 * 3600 * 1000) return null;
+    return r.dayPct;
+  };
   const portfolioValue = useMemo(() => groups.reduce((s, g) => s + g.value, 0), [groups]);
   const portfolioCost = useMemo(() => groups.reduce((s, g) => s + g.cost, 0), [groups]);
   const realizedTotal = useMemo(() => groups.reduce((s, g) => s + g.realized, 0), [groups]);
@@ -2574,6 +2584,8 @@ export default function App() {
     const failed = [];
     const updated = {};   // symbol → price
     const updatedById = {}; // item.id → price (Rohstoffe, TD-Treffer)
+    const dayPct = {};      // symbol → Tagesveränderung in %
+    const dayPctById = {};  // item.id → Tagesveränderung in %
     const resolved = {};  // symbol → coinId (für künftige Updates cachen)
     const cur = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
     const curLow = cur.toLowerCase();
@@ -2601,14 +2613,15 @@ export default function App() {
       const ids = Object.values(symToId);
       if (ids.length) {
         try {
-          const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=${curLow}`);
+          const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=${curLow}&include_24hr_change=true`);
           if (r.status === 429) {
             notes.push("CoinGecko-Limit erreicht – in 1 Min. erneut versuchen");
           } else {
             const j = await r.json();
             for (const [s, id] of Object.entries(symToId)) {
               const p = j[id] && j[id][curLow];
-              if (p) updated[s] = p;
+              const ch = j[id] && j[id][`${curLow}_24h_change`];
+              if (p) { updated[s] = p; if (typeof ch === "number" && isFinite(ch)) dayPct[s] = ch; }
               else failed.push(s);
             }
           }
@@ -2635,7 +2648,10 @@ export default function App() {
               if (res.status === 401 || res.status === 403) { keyInvalid = true; break; }
               if (res.status === 429) { notes.push("Finnhub-Limit erreicht – in 1 Min. erneut versuchen"); break; }
               const q = await res.json();
-              if (q && q.c) updated[sym] = q.c * usdEur;
+              if (q && q.c) {
+                updated[sym] = q.c * usdEur;
+                if (typeof q.dp === "number" && isFinite(q.dp)) dayPct[sym] = q.dp;
+              }
               else tdRetry.push(s);
               await sleep(250);
             } catch { tdRetry.push(s); }
@@ -2678,7 +2694,14 @@ export default function App() {
           try {
             const q = await fetch(`https://api.twelvedata.com/quote?symbol=${encodeURIComponent(sym)}&apikey=${settings.tdKey}`).then((r) => r.json());
             const px = q && q.close != null ? Number(q.close) : null;
-            if (px && q.currency) { const r = await fxTo(q.currency); if (r) updated[sym.toUpperCase()] = px * r; else failed.push(sym); }
+            if (px && q.currency) {
+              const r = await fxTo(q.currency);
+              if (r) {
+                updated[sym.toUpperCase()] = px * r;
+                const ch = Number(q.percent_change);
+                if (isFinite(ch)) dayPct[sym.toUpperCase()] = ch;
+              } else failed.push(sym);
+            }
             else if (q && q.code === 429) { notes.push("Twelve-Data-Limit erreicht – in 1 Min. erneut versuchen"); break; }
             else if (q && /Grow|Venture/i.test(q.message || "")) failed.push(`${sym} (EU-Börse nur im kostenpflichtigen Plan)`);
             else failed.push(`${sym} (nicht gefunden)`);
@@ -2691,7 +2714,14 @@ export default function App() {
             const q = await fetch(`https://api.twelvedata.com/quote?symbol=${encodeURIComponent(def.sym)}&apikey=${settings.tdKey}`).then((r) => r.json());
             const px = q && q.close != null ? Number(q.close) : null;
             const ccy = (q && q.currency) || "USD";
-            if (px) { const r = await fxTo(ccy); if (r) updatedById[m.id] = px * r; else failed.push(m.name); }
+            if (px) {
+              const r = await fxTo(ccy);
+              if (r) {
+                updatedById[m.id] = px * r;
+                const ch = Number(q.percent_change);
+                if (isFinite(ch)) dayPctById[m.id] = ch;
+              } else failed.push(m.name);
+            }
             else if (q && q.code === 429) { notes.push("Twelve-Data-Limit erreicht – in 1 Min. erneut versuchen"); break; }
             else if (q && /Grow|Venture/i.test(q.message || "")) failed.push(`${m.name} (nur im kostenpflichtigen Plan)`);
             else failed.push(m.name);
@@ -2709,7 +2739,12 @@ export default function App() {
           const sym = (i.symbol || "").toUpperCase();
           const p = updatedById[i.id] != null ? updatedById[i.id] : updated[sym];
           const coinId = resolved[sym] || i.coinId;
-          if (p != null) return { ...i, price: Number(p.toFixed(p < 1 ? 4 : 2)), priceUpdated: now, coinId };
+          const d = dayPctById[i.id] != null ? dayPctById[i.id] : dayPct[sym];
+          if (p != null) {
+            const next = { ...i, price: Number(p.toFixed(p < 1 ? 4 : 2)), priceUpdated: now, coinId };
+            if (d != null) { next.dayPct = Number(d.toFixed(2)); next.dayPctAt = now; }
+            return next;
+          }
           return coinId !== i.coinId ? { ...i, coinId } : i;
         }),
       }));
@@ -3516,8 +3551,9 @@ export default function App() {
           )}
           {groups.length > 1 && (
             <div className="fc-seg" role="tablist">
-              <button className={investSort === "size" ? "active" : ""} onClick={() => setInvestSort("size")}>Nach Grösse</button>
-              <button className={investSort === "type" ? "active" : ""} onClick={() => setInvestSort("type")}>Nach Art</button>
+              <button className={investSort === "size" ? "active" : ""} onClick={() => setInvestSort("size")}>Grösse</button>
+              <button className={investSort === "type" ? "active" : ""} onClick={() => setInvestSort("type")}>Art</button>
+              <button className={investSort === "day" ? "active" : ""} onClick={() => setInvestSort("day")}>Tages-%</button>
             </div>
           )}
           {groups.length > 7 && <SearchBar value={search} onChange={setSearch} placeholder="Position suchen" />}
@@ -3529,6 +3565,14 @@ export default function App() {
                   const ord = { aktie: 0, etf: 1, krypto: 2, rohstoff: 3, immobilie: 4, cash: 5 };
                   const d = (ord[a.type] ?? 9) - (ord[b.type] ?? 9);
                   if (d !== 0) return d;
+                }
+                if (investSort === "day") {
+                  /* Positionen ohne Tagesveränderung (Cash, Immobilien, fehlende Kurse) nach unten */
+                  const da = dayPctOf(a), db = dayPctOf(b);
+                  if (da == null && db == null) return b.value - a.value;
+                  if (da == null) return 1;
+                  if (db == null) return -1;
+                  if (db !== da) return db - da;
                 }
                 return b.value - a.value;
               }).map((g) => {
@@ -3562,9 +3606,15 @@ export default function App() {
                     value={
                       <span>
                         {eurM(g.value)}<br />
-                        <span className="fc-gain" style={{ color: showPct ? (g.unreal >= 0 ? C.positive : C.error) : C.mutedSoft }}>
-                          {showPct ? `${g.unreal >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} %` : "–"}
-                        </span>
+                        {investSort === "day" ? (
+                          <span className="fc-gain" style={{ color: dayPctOf(g) == null ? C.mutedSoft : dayPctOf(g) >= 0 ? C.positive : C.error }}>
+                            {dayPctOf(g) == null ? "–" : `${dayPctOf(g) >= 0 ? "+" : ""}${dayPctOf(g).toFixed(1).replace(".", ",")} % Tag`}
+                          </span>
+                        ) : (
+                          <span className="fc-gain" style={{ color: showPct ? (g.unreal >= 0 ? C.positive : C.error) : C.mutedSoft }}>
+                            {showPct ? `${g.unreal >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} %` : "–"}
+                          </span>
+                        )}
                       </span>
                     }
                     note={g.lots.some((l) => priceFailIds.includes(l.id)) ? "Keine Live-Daten – zum manuellen Eintragen tippen" : null}
