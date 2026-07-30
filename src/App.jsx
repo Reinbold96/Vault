@@ -178,7 +178,7 @@ const TICKER_DOMAINS = {
 };
 
 /* Sichtbare Versionskennung - hilft beim Prüfen, ob das Gerät die neue Fassung hat */
-const APP_VERSION = "35 · 30.07.2026";
+const APP_VERSION = "36 · 30.07.2026";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -302,8 +302,8 @@ async function bioVerify(credId) {
 /* Indizes sind bei Twelve Data kostenpflichtig – wir nutzen liquide ETF-Stellvertreter. */
 const BENCHMARKS = [
   { id: "sp500", label: "S&P 500", sym: "SPY", color: "#4a96eb" },
-  { id: "nasdaq", label: "Nasdaq 100", sym: "QQQ", color: "#b598ff" },
-  { id: "world", label: "All World", sym: "URTH", color: "#f0a83a" },
+  { id: "nasdaq", label: "Nasdaq", sym: "QQQ", color: "#b598ff" },
+  { id: "world", label: "World", sym: "URTH", color: "#f0a83a" },
   { id: "dax", label: "DAX", sym: "EWG", color: "#45c98a" },
 ];
 /* Typen, für die es kostenlose Kurshistorie gibt */
@@ -2160,7 +2160,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
           const on = benchmarks.includes(b.id);
           return (
             <button key={b.id} className={`fc-bm ${on ? "on" : ""}`} onClick={() => toggleBm(b.id)} style={on ? { borderColor: b.color, color: b.color } : undefined}>
-              <span className="dot" style={{ background: on ? b.color : C.borderStrong }} />{b.label}
+              <span className="dot" style={{ background: on ? b.color : C.borderStrong }} /><span className="lbl">{b.label}</span>
             </button>
           );
         })}
@@ -3201,8 +3201,9 @@ export default function App() {
         .fc-ranges button{flex:1;min-width:0;height:34px;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12px;font-weight:600;padding:0;border-radius:9999px;cursor:pointer;font-family:inherit;white-space:nowrap;}
         .fc-ranges button.active{background:${C.strong};color:${C.ink};border-color:${C.borderStrong};}
         .fc-chart-empty{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:13.5px;color:${C.muted};padding:0 14px;line-height:1.45;}
-        .fc-bmrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;}
-        .fc-bm{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:34px;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12px;font-weight:600;padding:0 12px;border-radius:9999px;cursor:pointer;font-family:inherit;}
+        .fc-bmrow{display:flex;flex-wrap:nowrap;gap:6px;margin-top:12px;}
+        .fc-bm{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:34px;min-width:0;flex:0 1 auto;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12px;font-weight:600;padding:0 10px;border-radius:9999px;cursor:pointer;font-family:inherit;}
+        .fc-bm .lbl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
         .fc-bm .dot{width:7px;height:7px;border-radius:9999px;}
         .fc-chart-note{margin-top:10px;font-size:12px;line-height:1.4;color:${C.mutedSoft};display:flex;flex-direction:column;gap:2px;}
         .fc-check{display:flex;align-items:center;gap:10px;background:none;border:none;padding:2px 0 14px;color:${C.body};font-size:14px;cursor:pointer;font-family:inherit;text-align:left;width:100%;}
@@ -3224,7 +3225,7 @@ export default function App() {
         .fc-chip{display:inline-flex;align-items:center;gap:4px;border:none;background:${C.strong};color:${C.ink};font-size:11px;font-weight:600;padding:4px 9px;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-chip:active{background:${C.borderStrong};}
         .fc-seg{display:flex;background:${C.soft};border-radius:9999px;padding:4px;margin:14px 16px 4px;gap:4px;}
-        .fc-invest-tools{display:flex;align-items:center;gap:8px;margin:14px 16px 4px;}
+        .fc-invest-tools{display:flex;align-items:center;gap:8px;margin:0 16px 16px;}
         .fc-invest-tools .fc-search{margin:0;flex:1 1 60%;min-width:0;}
         /* Schieber nimmt den grösseren Teil der Zeile: die Symbol-Buttons werden damit
            so breit wie die Zeitraum-Buttons im Chart, bei gleichem Abstand (6px) */
