@@ -177,6 +177,9 @@ const TICKER_DOMAINS = {
   UBSG: "ubs.com", ABBN: "abb.com",
 };
 
+/* Sichtbare Versionskennung - hilft beim Prüfen, ob das Gerät die neue Fassung hat */
+const APP_VERSION = "35 · 30.07.2026";
+
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 /* Echte Hover-Geraete (Maus/Trackpad). Auf Touch feuern Browser Fake-Mouse-Events,
@@ -2671,6 +2674,20 @@ export default function App() {
   const q = search.trim().toLowerCase();
   const matches = (...fields) => !q || fields.some((f) => String(f || "").toLowerCase().includes(q));
 
+  /* Neue Fassung erzwingen: Service Worker aktualisieren, Caches leeren, neu laden */
+  async function checkForUpdate() {
+    try {
+      const regs = (await navigator.serviceWorker?.getRegistrations?.()) || [];
+      await Promise.all(regs.map((r) => r.update().catch(() => {})));
+      for (const r of regs) if (r.waiting) r.waiting.postMessage("skipWaiting");
+      if (window.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+    } catch { /* trotzdem neu laden */ }
+    window.location.reload();
+  }
+
   /* ---------- Herunterziehen aktualisiert die Kurse ---------- */
   const [pullPx, setPullPx] = useState(0);
   const pullRef = useRef({ y0: null, active: false, dist: 0 });
@@ -3716,8 +3733,8 @@ export default function App() {
           )}
           {groups.length > 1 && (
             <div className="fc-invest-tools">
-              {groups.length > 7 && <SearchBar value={search} onChange={setSearch} placeholder="Suchen" />}
-              <div className={`fc-seg fc-seg-icons ${groups.length > 7 ? "compact" : ""}`} role="tablist">
+              <SearchBar value={search} onChange={setSearch} placeholder="Suchen" />
+              <div className="fc-seg fc-seg-icons" role="tablist">
                 <button className={investSort === "size" ? "active" : ""} onClick={() => setInvestSort("size")} title="Nach Grösse" aria-label="Nach Grösse sortieren">
                   <ArrowDownWideNarrow size={18} strokeWidth={1.7} />
                 </button>
@@ -4093,6 +4110,17 @@ export default function App() {
           <div style={{ fontSize: 13, lineHeight: 1.45, color: C.muted }}>
             Deine Daten liegen ausschliesslich lokal auf diesem Gerät (Browser-Speicher) und verlassen es nie – kein Server, kein Konto.
             Um sie auf ein anderes Gerät zu bringen, exportiere hier ein Backup und importiere es dort.
+          </div>
+          <Field label="App-Version">
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <span style={{ flex: 1, fontSize: 15, fontWeight: 600, color: C.ink, fontVariantNumeric: "tabular-nums" }}>{APP_VERSION}</span>
+              <Btn kind="ghost" small onClick={checkForUpdate} style={{ gap: 6, flex: "none" }}>
+                <RefreshCw size={15} strokeWidth={1.9} /> Aktualisieren
+              </Btn>
+            </div>
+          </Field>
+          <div style={{ fontSize: 13, lineHeight: 1.45, color: C.muted, marginTop: -6 }}>
+            Updates kommen automatisch. Falls die App eine alte Fassung zeigt, hier tippen – das leert den Zwischenspeicher und lädt neu. Deine Daten bleiben erhalten.
           </div>
         </Sheet>
       )}
