@@ -3158,10 +3158,12 @@ export default function App() {
         .fc-chip:active{background:${C.borderStrong};}
         .fc-seg{display:flex;background:${C.soft};border-radius:9999px;padding:4px;margin:14px 16px 4px;gap:4px;}
         .fc-invest-tools{display:flex;align-items:center;gap:8px;margin:14px 16px 4px;}
-        .fc-invest-tools .fc-search{margin:0;flex:1;min-width:0;}
-        .fc-invest-tools .fc-seg{margin:0;height:44px;align-items:center;flex:1;gap:6px;}
+        .fc-invest-tools .fc-search{margin:0;flex:1 1 38%;min-width:0;}
+        /* Schieber nimmt den grösseren Teil der Zeile: die Symbol-Buttons werden damit
+           so breit wie die Zeitraum-Buttons im Chart, bei gleichem Abstand (6px) */
+        .fc-invest-tools .fc-seg{margin:0;height:44px;align-items:center;flex:1 1 62%;gap:6px;}
         .fc-invest-tools .fc-seg.compact{flex:none;}
-        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;height:36px;min-width:52px;padding:0;color:${C.muted};}
+        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;flex:1;height:36px;min-width:44px;padding:0;color:${C.muted};}
         .fc-seg-icons button.active{color:${C.ink};}
         .fc-seg button{flex:1;border:none;background:transparent;color:${C.muted};font-size:14px;font-weight:600;padding:9px 0;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-seg button.active{background:${C.canvas};color:${C.ink};box-shadow:${SHADOW};}
