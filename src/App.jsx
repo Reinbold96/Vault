@@ -2088,17 +2088,18 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
   return (
     <Card style={{ paddingBottom: 12 }}>
       <div className="fc-chart-head">
-        <div>
-          <div className="val">{masked ? MASK : hoverRow ? eur(hoverRow.value) : view.last ? eur(view.last.value) : "–"}</div>
+        {/* Wert und Veränderung teilen eine Zeile - spart eine Zeile Höhe */}
+        <div className="fc-chart-val">
+          <span className="val">{masked ? MASK : hoverRow ? eur(hoverRow.value) : view.last ? eur(view.last.value) : "–"}</span>
           {hoverRow ? (
-            <div className="chg" style={{ color: C.muted }}>
+            <span className="chg" style={{ color: C.muted }}>
               {fmtDate(hoverRow.d)}
               {showPerf && hoverRow.perf != null && <> · {hoverRow.perf >= 0 ? "+" : ""}{hoverRow.perf.toFixed(1).replace(".", ",")} %</>}
-            </div>
+            </span>
           ) : view.first && view.last ? (
-            <div className="chg" style={{ color: chg >= 0 ? C.positive : C.error }}>
+            <span className="chg" style={{ color: chg >= 0 ? C.positive : C.error }}>
               {!masked && <>{chg >= 0 ? "+" : ""}{eur(chg)} · </>}{chgPct >= 0 ? "+" : ""}{chgPct.toFixed(1).replace(".", ",")} %
-            </div>
+            </span>
           ) : null}
         </div>
         <div className="fc-chart-modes">
@@ -3061,7 +3062,7 @@ export default function App() {
         .fc-pie-caption .dot{width:8px;height:8px;border-radius:50%;flex:none;}
         .fc-pie-caption .tx{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
         .fc-search{position:relative;margin:14px 16px 4px;}
-        .fc-search input{width:100%;background:${C.soft};border:1px solid transparent;border-radius:9999px;padding:11px 14px 11px 40px;height:44px;color:${C.ink};font-size:15px;}
+        .fc-search input{width:100%;background:${C.soft};border:1px solid transparent;border-radius:9999px;padding:0 14px 0 38px;height:34px;color:${C.ink};font-size:15px;}
         .fc-search input:focus{outline:none;border-color:${C.borderStrong};background:${C.canvas};}
         .fc-search .ic{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:${C.mutedSoft};display:flex;}
         .fc-search .clr{position:absolute;right:12px;top:50%;transform:translateY(-50%);border:none;background:none;color:${C.mutedSoft};cursor:pointer;font-size:16px;padding:4px;}
@@ -3163,21 +3164,22 @@ export default function App() {
         .fc-lock-inner .txt{font-size:14px;line-height:1.45;color:${C.muted};margin-bottom:20px;}
         .fc-lock-inner .err{font-size:13px;color:${C.error};margin-top:12px;}
         .fc-lock-alt{margin-top:14px;background:none;border:none;color:${C.mutedSoft};font-size:13px;text-decoration:underline;cursor:pointer;font-family:inherit;}
-        .fc-chart-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;}
+        .fc-chart-head{display:flex;justify-content:space-between;align-items:center;gap:12px;}
+        .fc-chart-val{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 8px;min-width:0;}
         .fc-chart-head .lbl{font-size:13px;color:${C.muted};}
-        .fc-chart-head .val{font-size:26px;font-weight:700;letter-spacing:-0.4px;font-variant-numeric:tabular-nums;color:${C.ink};margin-top:1px;}
-        .fc-chart-head .chg{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px;}
+        .fc-chart-head .val{font-size:26px;font-weight:700;letter-spacing:-0.4px;font-variant-numeric:tabular-nums;color:${C.ink};}
+        .fc-chart-head .chg{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;}
         .fc-chart-modes{display:flex;background:${C.soft};border-radius:9999px;padding:3px;gap:2px;flex-shrink:0;}
-        .fc-chart-modes button{border:none;background:transparent;color:${C.muted};font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:9999px;cursor:pointer;font-family:inherit;}
+        .fc-chart-modes button{display:inline-flex;align-items:center;justify-content:center;height:28px;min-width:34px;border:none;background:transparent;color:${C.muted};font-size:12.5px;font-weight:600;padding:0 11px;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-chart-modes button.active{background:${C.canvas};color:${C.ink};box-shadow:${SHADOW};}
         .fc-chart-modes button:disabled{opacity:.45;cursor:not-allowed;}
         .fc-bmrow.dim{opacity:.55;}
         .fc-ranges{display:flex;gap:6px;margin-top:12px;}
-        .fc-ranges button{flex:1;min-width:0;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12px;font-weight:600;padding:6px 0;border-radius:9999px;cursor:pointer;font-family:inherit;white-space:nowrap;}
+        .fc-ranges button{flex:1;min-width:0;height:34px;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12px;font-weight:600;padding:0;border-radius:9999px;cursor:pointer;font-family:inherit;white-space:nowrap;}
         .fc-ranges button.active{background:${C.strong};color:${C.ink};border-color:${C.borderStrong};}
         .fc-chart-empty{height:100%;display:flex;align-items:center;justify-content:center;text-align:center;font-size:13.5px;color:${C.muted};padding:0 14px;line-height:1.45;}
         .fc-bmrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;}
-        .fc-bm{display:inline-flex;align-items:center;gap:6px;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12px;font-weight:600;padding:5px 10px;border-radius:9999px;cursor:pointer;font-family:inherit;}
+        .fc-bm{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:34px;border:1px solid ${C.hairline};background:transparent;color:${C.muted};font-size:12px;font-weight:600;padding:0 12px;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-bm .dot{width:7px;height:7px;border-radius:9999px;}
         .fc-chart-note{margin-top:10px;font-size:12px;line-height:1.4;color:${C.mutedSoft};display:flex;flex-direction:column;gap:2px;}
         .fc-check{display:flex;align-items:center;gap:10px;background:none;border:none;padding:2px 0 14px;color:${C.body};font-size:14px;cursor:pointer;font-family:inherit;text-align:left;width:100%;}
@@ -3203,8 +3205,8 @@ export default function App() {
         .fc-invest-tools .fc-search{margin:0;flex:1 1 50%;min-width:0;}
         /* Schieber nimmt den grösseren Teil der Zeile: die Symbol-Buttons werden damit
            so breit wie die Zeitraum-Buttons im Chart, bei gleichem Abstand (6px) */
-        .fc-invest-tools .fc-seg{margin:0;height:44px;align-items:center;flex:1 1 50%;gap:6px;}
-        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;flex:1;height:36px;min-width:44px;padding:0;color:${C.muted};}
+        .fc-invest-tools .fc-seg{margin:0;height:34px;padding:3px;align-items:center;flex:1 1 50%;gap:6px;}
+        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;flex:1;height:28px;min-width:40px;padding:0;color:${C.muted};}
         .fc-seg-icons button.active{color:${C.ink};}
         .fc-seg button{flex:1;border:none;background:transparent;color:${C.muted};font-size:14px;font-weight:600;padding:9px 0;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-seg button.active{background:${C.canvas};color:${C.ink};box-shadow:${SHADOW};}
