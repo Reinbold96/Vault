@@ -8,7 +8,7 @@ import {
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap,
   Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown, Check, Info,
   Search, Percent, ArrowDownLeft, ArrowUpRight, Tag, Pencil, Trash2,
-  ArrowDownWideNarrow, Shapes,
+  ArrowDownWideNarrow, Layers,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -3656,13 +3656,13 @@ export default function App() {
               {groups.length > 7 && <SearchBar value={search} onChange={setSearch} placeholder="Position suchen" />}
               <div className={`fc-seg fc-seg-icons ${groups.length > 7 ? "compact" : ""}`} role="tablist">
                 <button className={investSort === "size" ? "active" : ""} onClick={() => setInvestSort("size")} title="Nach Grösse" aria-label="Nach Grösse sortieren">
-                  <ArrowDownWideNarrow size={20} strokeWidth={2.2} />
+                  <ArrowDownWideNarrow size={18} strokeWidth={1.7} />
                 </button>
                 <button className={investSort === "type" ? "active" : ""} onClick={() => setInvestSort("type")} title="Nach Art" aria-label="Nach Art sortieren">
-                  <Shapes size={20} strokeWidth={2.2} />
+                  <Layers size={18} strokeWidth={1.7} />
                 </button>
                 <button className={investSort === "day" ? "active" : ""} onClick={() => setInvestSort("day")} title="Nach Tagesveränderung" aria-label="Nach Tagesveränderung sortieren">
-                  <Percent size={20} strokeWidth={2.2} />
+                  <Percent size={18} strokeWidth={1.7} />
                 </button>
               </div>
             </div>
