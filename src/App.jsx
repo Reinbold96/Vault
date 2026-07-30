@@ -3161,7 +3161,7 @@ export default function App() {
         .fc-invest-tools .fc-search{margin:0;flex:1;min-width:0;}
         .fc-invest-tools .fc-seg{margin:0;height:44px;align-items:center;flex:1;}
         .fc-invest-tools .fc-seg.compact{flex:none;}
-        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 14px;color:${C.mutedSoft};}
+        .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 12px;color:${C.muted};}
         .fc-seg-icons button.active{color:${C.ink};}
         .fc-seg button{flex:1;border:none;background:transparent;color:${C.muted};font-size:14px;font-weight:600;padding:9px 0;border-radius:9999px;cursor:pointer;font-family:inherit;}
         .fc-seg button.active{background:${C.canvas};color:${C.ink};box-shadow:${SHADOW};}
@@ -3656,13 +3656,13 @@ export default function App() {
               {groups.length > 7 && <SearchBar value={search} onChange={setSearch} placeholder="Position suchen" />}
               <div className={`fc-seg fc-seg-icons ${groups.length > 7 ? "compact" : ""}`} role="tablist">
                 <button className={investSort === "size" ? "active" : ""} onClick={() => setInvestSort("size")} title="Nach Grösse" aria-label="Nach Grösse sortieren">
-                  <ArrowDownWideNarrow size={17} strokeWidth={2} />
+                  <ArrowDownWideNarrow size={20} strokeWidth={2.2} />
                 </button>
                 <button className={investSort === "type" ? "active" : ""} onClick={() => setInvestSort("type")} title="Nach Art" aria-label="Nach Art sortieren">
-                  <Shapes size={17} strokeWidth={2} />
+                  <Shapes size={20} strokeWidth={2.2} />
                 </button>
                 <button className={investSort === "day" ? "active" : ""} onClick={() => setInvestSort("day")} title="Nach Tagesveränderung" aria-label="Nach Tagesveränderung sortieren">
-                  <Percent size={17} strokeWidth={2} />
+                  <Percent size={20} strokeWidth={2.2} />
                 </button>
               </div>
             </div>
