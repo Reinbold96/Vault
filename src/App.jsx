@@ -2001,7 +2001,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
         prev = { d, px };
       }
 
-      setState({ loading: false, rows, notes, err: rows.length ? "" : "Keine Kursdaten für den Zeitraum gefunden" });
+      setState({ loading: false, rows, notes: [...new Set(notes)], err: rows.length ? "" : "Keine Kursdaten für den Zeitraum gefunden" });
     }
     build();
     return () => { cancelled = true; };
@@ -2097,7 +2097,7 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
             </div>
           ) : view.first && view.last ? (
             <div className="chg" style={{ color: chg >= 0 ? C.positive : C.error }}>
-              {!masked && <>{chg >= 0 ? "+" : ""}{eur(chg)} · </>}{chg >= 0 ? "+" : ""}{chgPct.toFixed(1).replace(".", ",")} %
+              {!masked && <>{chg >= 0 ? "+" : ""}{eur(chg)} · </>}{chgPct >= 0 ? "+" : ""}{chgPct.toFixed(1).replace(".", ",")} %
             </div>
           ) : null}
         </div>
