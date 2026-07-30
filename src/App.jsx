@@ -8,7 +8,7 @@ import {
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap,
   Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown, Check, Info,
   Search, Percent, ArrowDownLeft, ArrowUpRight, Tag, Pencil, Trash2,
-  ArrowDownWideNarrow, Layers,
+  ArrowDownWideNarrow, Layers, RefreshCw,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -2187,6 +2187,7 @@ export default function App() {
   const setInvestSort = (v) => setSettings((x) => ({ ...x, investSort: v }));
   const [sheet, setSheet] = useState(null);
   const [priceStatus, setPriceStatus] = useState("");
+  const [priceBusy, setPriceBusy] = useState(false);
   const [priceFailIds, setPriceFailIds] = useState([]);
   const [activeCat, setActiveCat] = useState(-1);
   const [hoverCat, setHoverCat] = useState(-1);
@@ -2669,11 +2670,48 @@ export default function App() {
   const q = search.trim().toLowerCase();
   const matches = (...fields) => !q || fields.some((f) => String(f || "").toLowerCase().includes(q));
 
+  /* ---------- Herunterziehen aktualisiert die Kurse ---------- */
+  const [pullPx, setPullPx] = useState(0);
+  const pullRef = useRef({ y0: null, active: false, dist: 0 });
+  useEffect(() => {
+    const LIMIT = 90, THRESHOLD = 62;
+    const top = () => (document.scrollingElement || document.documentElement).scrollTop;
+    const reset = () => { pullRef.current = { y0: null, active: false, dist: 0 }; setPullPx(0); };
+    const onStart = (e) => {
+      if (e.touches.length !== 1 || sheet || locked || priceBusy) { reset(); return; }
+      pullRef.current = { y0: e.touches[0].clientY, active: top() <= 0, dist: 0 };
+    };
+    const onMove = (e) => {
+      const st = pullRef.current;
+      if (!st.active || st.y0 == null) return;
+      const dy = e.touches[0].clientY - st.y0;
+      if (dy <= 0 || top() > 0) { st.dist = 0; setPullPx(0); return; }
+      st.dist = Math.min(dy * 0.45, LIMIT);
+      setPullPx(st.dist);
+      if (e.cancelable) e.preventDefault(); /* Rubber-Band und Browser-Reload unterdrücken */
+    };
+    const onEnd = () => {
+      const fire = pullRef.current.dist >= THRESHOLD;
+      reset();
+      if (fire && !priceBusy) refreshPrices();
+    };
+    window.addEventListener("touchstart", onStart, { passive: true });
+    window.addEventListener("touchmove", onMove, { passive: false });
+    window.addEventListener("touchend", onEnd, { passive: true });
+    window.addEventListener("touchcancel", onEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onStart);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("touchend", onEnd);
+      window.removeEventListener("touchcancel", onEnd);
+    };
+  }, [sheet, locked, priceBusy, data.investments]);
+
   /* ---------- Live-Kurse: CoinGecko (Krypto) + Finnhub (Aktien/ETF) ---------- */
   async function refreshPrices() {
     const priceable = data.investments.filter((i) => !VALUE_TYPES.includes(i.type));
     if (!priceable.length) return;
-    setPriceStatus("Kurse werden geladen …");
+    setPriceBusy(true);
     const notes = [];
     const failed = [];
     const updated = {};   // symbol → price
@@ -2854,8 +2892,7 @@ export default function App() {
     if (n) parts.push(`${n} von ${priceable.length} Kursen aktualisiert`);
     if (failed.length) parts.push(`Fehlgeschlagen: ${[...new Set(failed)].join(", ")}`);
     parts.push(...notes);
-    setPriceStatus(parts.join(" · ") || "Keine Kurse gefunden");
-    setTimeout(() => setPriceStatus(""), 12000);
+    setPriceBusy(false);
   }
 
   /* Beim App-Start einmal automatisch aktualisieren */
@@ -3092,7 +3129,12 @@ export default function App() {
         .fc-tab .u{width:24px;height:2px;border-radius:1px;background:transparent;margin-top:2px;}
         .fc-tab.active{color:${C.ink};}
         .fc-tab.active .u{background:${C.ink};}
+        html,body{overscroll-behavior-y:contain;}
         .fc-status{margin:0 18px 12px;font-size:14px;color:${C.body};}
+        /* eigener Pull-to-Refresh: Browser-Overscroll wird dafür unterdrückt */
+        .fc-pull{position:fixed;top:0;left:50%;margin-left:-17px;width:34px;height:34px;border-radius:9999px;background:${C.canvas};border:1px solid ${C.hairline};box-shadow:${SHADOW};display:flex;align-items:center;justify-content:center;color:${C.muted};z-index:70;pointer-events:none;}
+        .fc-pull .spin{animation:fcSpin .9s linear infinite;}
+        @keyframes fcSpin{to{transform:rotate(360deg);}}
         .fc-gain{font-size:13px;font-weight:500;font-variant-numeric:tabular-nums;}
         .fc-hint{margin:12px 18px 0;font-size:13px;line-height:1.4;color:${C.muted};}
         .fc-note{margin-top:3px;font-size:12.5px;font-weight:500;line-height:1.3;color:${C.error};}
@@ -3158,10 +3200,10 @@ export default function App() {
         .fc-chip:active{background:${C.borderStrong};}
         .fc-seg{display:flex;background:${C.soft};border-radius:9999px;padding:4px;margin:14px 16px 4px;gap:4px;}
         .fc-invest-tools{display:flex;align-items:center;gap:8px;margin:14px 16px 4px;}
-        .fc-invest-tools .fc-search{margin:0;flex:1 1 42%;min-width:0;}
+        .fc-invest-tools .fc-search{margin:0;flex:1 1 50%;min-width:0;}
         /* Schieber nimmt den grösseren Teil der Zeile: die Symbol-Buttons werden damit
            so breit wie die Zeitraum-Buttons im Chart, bei gleichem Abstand (6px) */
-        .fc-invest-tools .fc-seg{margin:0;height:44px;align-items:center;flex:1 1 58%;gap:6px;}
+        .fc-invest-tools .fc-seg{margin:0;height:44px;align-items:center;flex:1 1 50%;gap:6px;}
         .fc-seg-icons button{display:inline-flex;align-items:center;justify-content:center;flex:1;height:36px;min-width:44px;padding:0;color:${C.muted};}
         .fc-seg-icons button.active{color:${C.ink};}
         .fc-seg button{flex:1;border:none;background:transparent;color:${C.muted};font-size:14px;font-weight:600;padding:9px 0;border-radius:9999px;cursor:pointer;font-family:inherit;}
@@ -3174,6 +3216,18 @@ export default function App() {
           @keyframes fcUp{from{transform:translateY(24px);opacity:.6}to{transform:translateY(0);opacity:1}}
         }
       `}</style>
+
+      {(pullPx > 0 || priceBusy) && (
+        <div
+          className="fc-pull"
+          style={{
+            opacity: priceBusy ? 1 : Math.min(1, pullPx / 40),
+            transform: `translateY(${priceBusy ? 14 : Math.max(4, pullPx - 12)}px)`,
+          }}
+        >
+          <RefreshCw size={16} strokeWidth={2} className={priceBusy ? "spin" : ""} />
+        </div>
+      )}
 
       {locked && (
         <div className="fc-lock">
@@ -3735,14 +3789,11 @@ export default function App() {
                 );
               })}</Card>}
           <div style={{ margin: "0 16px", display: "flex", gap: 12 }}>
-            <Btn onClick={() => setSheet({ type: "invest" })}>+ Position</Btn>
-            <Btn kind="ghost" disabled={!data.investments.length || priceStatus.startsWith("Kurse werden")} onClick={refreshPrices}>
-              Kurse{lastPriceUpdate > 0 ? ` · ${agoLabel(lastPriceUpdate)}` : " laden"}
-            </Btn>
+            <Btn onClick={() => setSheet({ type: "invest" })} style={{ flex: 1 }}>+ Position</Btn>
           </div>
           <div className="fc-hint">
+            Zum Aktualisieren der Kurse die Seite nach unten ziehen{lastPriceUpdate > 0 ? ` – zuletzt ${agoLabel(lastPriceUpdate)}` : ""}.
             Krypto und Edelmetalle laufen ohne Key, Aktien und ETFs über die API-Keys in den Einstellungen.
-            Kurse werden beim Öffnen automatisch geladen, wenn sie älter als sechs Stunden sind.
           </div>
         </>
       )}
