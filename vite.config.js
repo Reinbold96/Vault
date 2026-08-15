@@ -11,7 +11,15 @@ export default defineConfig({
       output: {
         entryFileNames: "assets/app-[hash].js",
         chunkFileNames: "assets/[name]-[hash].js",
-        assetFileNames: "assets/[name][extname]",
+        // Das Web-App-Manifest MUSS im Site-Root bleiben (nicht unter assets/),
+        // sonst loesen die relativen "start_url"/"scope" auf .../Vault/assets/
+        // auf -> iOS-Homescreen-App startet ins Leere (GitHub-Pages-404).
+        assetFileNames: (info) => {
+          const n = info.name || (info.names && info.names[0]) || "";
+          return n.endsWith(".webmanifest")
+            ? "[name][extname]"
+            : "assets/[name][extname]";
+        },
       },
     },
   },
