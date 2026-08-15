@@ -8,7 +8,7 @@ import {
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap,
   Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, ChevronDown, Check, Info,
   Search, Percent, ArrowDownLeft, ArrowUpRight, Tag, Pencil, Trash2,
-  ArrowDownWideNarrow, Layers, RefreshCw,
+  ArrowDownWideNarrow, Layers, RefreshCw, Calculator, User,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -178,7 +178,7 @@ const TICKER_DOMAINS = {
 };
 
 /* Sichtbare Versionskennung - hilft beim Prüfen, ob das Gerät die neue Fassung hat */
-const APP_VERSION = "37 · 30.07.2026";
+const APP_VERSION = "38 · 15.08.2026";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -2188,9 +2188,482 @@ function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBench
 }
 
 /* ---------- Haupt-App ---------- */
+/* ---------- Stammdaten: Grunderwerbsteuer & Kirchensteuer (Stand 2026) ---------- */
+const BUNDESLAENDER = [
+  { id: "bw", label: "Baden-Württemberg", grest: 5.0, kist: 8 },
+  { id: "by", label: "Bayern", grest: 3.5, kist: 8 },
+  { id: "be", label: "Berlin", grest: 6.0, kist: 9 },
+  { id: "bb", label: "Brandenburg", grest: 6.5, kist: 9 },
+  { id: "hb", label: "Bremen", grest: 5.5, kist: 9 },
+  { id: "hh", label: "Hamburg", grest: 5.5, kist: 9 },
+  { id: "he", label: "Hessen", grest: 6.0, kist: 9 },
+  { id: "mv", label: "Mecklenburg-Vorpommern", grest: 6.0, kist: 9 },
+  { id: "ni", label: "Niedersachsen", grest: 5.0, kist: 9 },
+  { id: "nw", label: "Nordrhein-Westfalen", grest: 6.5, kist: 9 },
+  { id: "rp", label: "Rheinland-Pfalz", grest: 5.0, kist: 9 },
+  { id: "sl", label: "Saarland", grest: 6.5, kist: 9 },
+  { id: "sn", label: "Sachsen", grest: 5.5, kist: 9 },
+  { id: "st", label: "Sachsen-Anhalt", grest: 5.0, kist: 9 },
+  { id: "sh", label: "Schleswig-Holstein", grest: 6.5, kist: 9 },
+  { id: "th", label: "Thüringen", grest: 5.0, kist: 9 },
+];
+const blOf = (id) => BUNDESLAENDER.find((b) => b.id === id) || null;
+
+/* Kinderfreibetrag inkl. BEA je Kind (2026, Näherung) – volle Höhe bei Zusammenveranlagung */
+const KINDERFREIBETRAG = 9600;
+
+const n = (v) => {
+  const x = Number(v);
+  return isFinite(x) ? x : 0;
+};
+const has = (v) => v !== "" && v != null && isFinite(Number(v));
+
+/* ---------- Einkommensteuertarif 2026 (§ 32a EStG) ---------- */
+function estGrundtarif2026(zvE) {
+  const x = Math.max(0, Math.floor(zvE));
+  if (x <= 12348) return 0;
+  if (x <= 17005) { const y = (x - 12348) / 10000; return Math.floor((954.80 * y + 1400) * y); }
+  if (x <= 69878) { const z = (x - 17005) / 10000; return Math.floor((181.19 * z + 2397) * z + 991.21); }
+  if (x <= 277825) return Math.floor(0.42 * x - 11136.95);
+  return Math.floor(0.45 * x - 19471.95);
+}
+function einkommensteuer2026(zvE, splitting) {
+  return splitting ? 2 * estGrundtarif2026(zvE / 2) : estGrundtarif2026(zvE);
+}
+/* Solidaritätszuschlag: 5,5 % der ESt, Freigrenze mit Milderungszone (2026-Näherung) */
+function soli2026(est, splitting) {
+  const grenze = splitting ? 39900 : 19950;
+  if (est <= grenze) return 0;
+  return Math.min(0.055 * est, 0.119 * (est - grenze));
+}
+/* Gesamte Steuer auf ein zvE inkl. Kirchensteuer + Soli */
+function gesamtSteuer(zvE, opts) {
+  const est = einkommensteuer2026(Math.max(0, zvE), opts.splitting);
+  const kist = opts.kistPct ? est * (opts.kistPct / 100) : 0;
+  return est + kist + soli2026(est, opts.splitting);
+}
+/* Steuerwirkung eines zusätzlichen (auch negativen) V+V-Ergebnisses.
+   Rückgabe > 0 = Mehrsteuer, < 0 = Erstattung. */
+function steuerWirkung(baseZvE, delta, opts) {
+  return gesamtSteuer(baseZvE + delta, opts) - gesamtSteuer(baseZvE, opts);
+}
+
+/* ---------- Vollständige Wirtschaftlichkeits-Analyse ---------- */
+function objektAnalyse(i, profile) {
+  const price = n(i.price);
+  const bl = blOf(i.state);
+  const grestPct = has(i.grestPct) ? n(i.grestPct) : (bl ? bl.grest : 5);
+  const notarPct = has(i.notarPct) ? n(i.notarPct) : 2.0;
+  const maklerPct = i.makler ? (has(i.maklerPct) ? n(i.maklerPct) : 3.57) : 0;
+  const nkPct = grestPct + notarPct + maklerPct;
+  const nk = (price * nkPct) / 100;
+  const invest = price + nk;
+
+  const equity = n(i.equity);
+  const loan0 = Math.max(0, (i.financeNk ? invest : price) - equity);
+  const zinsPct = n(i.zins);
+  const tilgPct = has(i.tilgung) ? n(i.tilgung) : 2;
+  const annuityY = (loan0 * (zinsPct + tilgPct)) / 100;
+
+  const area = n(i.area);
+  const buildShare = (has(i.buildingPct) ? n(i.buildingPct) : 80) / 100;
+  const afaPct = (has(i.afaPct) ? n(i.afaPct) : 2) / 100;
+  const afaBase = invest * buildShare;
+  const afaY = afaBase * afaPct;
+
+  const rentM = has(i.rentPerM2) && area ? n(i.rentPerM2) * area : n(i.rent);
+  const rentY = rentM * 12;
+  /* Momentaufnahme: keine Miet-/Wertsteigerung und kein Mietausfall unterstellt */
+  const rentGrowth = 0;
+  const vacancy = 0;
+  const propGrowth = 0;
+
+  /* Nicht umlagefähige Kosten – zwei Wirkungen:
+     • opsCashY  mindert den Cashflow (tatsächlicher Geldabfluss)
+     • opsDeductY mindert das zu versteuernde Ergebnis (Werbungskosten)
+     Die Instandhaltungsrücklage mindert nur den Cashflow – steuerlich wirkt sie
+     erst bei tatsächlicher Ausgabe, wird hier also konservativ NICHT abgezogen.
+     "pauschal" (Standard): ein Prozentsatz der Kaltmiete deckt Verwaltung,
+     Instandhaltung und Mietausfallwagnis ab (Richtwert 25 %). */
+  let opsCashY, opsDeductY;
+  if ((i.costMode || "pauschal") === "detail") {
+    const ruecklageY = has(i.maintPerM2) && area ? n(i.maintPerM2) * area : n(i.maintYear);
+    const laufendY = n(i.mgmtM) * 12 + n(i.otherM) * 12;
+    opsCashY = ruecklageY + laufendY;
+    opsDeductY = laufendY;
+  } else {
+    const pct = has(i.opsPct) ? n(i.opsPct) : 25;
+    opsCashY = (rentY * pct) / 100;
+    opsDeductY = opsCashY;
+  }
+
+  /* Steuerprofil (alles optional) */
+  const p = profile || {};
+  const hasIncome = has(p.taxIncome);
+  const kids = Math.max(0, Math.round(n(p.kids)));
+  const kinderFB = kids * KINDERFREIBETRAG;
+  const baseZvE = Math.max(0, n(p.taxIncome) - kinderFB);
+  const taxOpts = { splitting: !!p.splitting, kistPct: p.church ? (blOf(p.taxState)?.kist || 9) : 0 };
+  const flatRate = has(i.flatRate) ? n(i.flatRate) : 42; /* Rückfall-Grenzsteuersatz */
+
+  /* Jahr-1-Kennzahlen über eine 12-Monats-Amortisation */
+  const monthTax = (interestY, rentEffY) => {
+    const erg = rentEffY - interestY - afaY - opsDeductY; /* steuerl. Ergebnis V+V */
+    const wirkung = hasIncome ? steuerWirkung(baseZvE, erg, taxOpts) : erg * (flatRate / 100);
+    return { erg, wirkung };
+  };
+
+  /* Zeitreihe: monatliche Tilgung, jährliche Aggregation */
+  const horizon = Math.min(40, Math.max(1, has(i.horizon) ? Math.round(n(i.horizon)) : 30));
+  const rate = zinsPct / 100 / 12;
+  let bal = loan0;
+  let val = price;
+  let rentEffY = rentM * 12 * (1 - vacancy);
+  const rows = [];
+  let kumCash = 0, interestY1 = 0, rentEffY1 = rentEffY, tilgY1 = 0;
+  for (let yr = 1; yr <= horizon; yr++) {
+    let interestY = 0, principalY = 0;
+    for (let m = 0; m < 12; m++) {
+      if (bal > 0 && annuityY > 0) {
+        const int = bal * rate;
+        const prin = Math.min(bal, annuityY / 12 - int);
+        if (prin <= 0) { interestY += annuityY / 12; continue; } /* Zins > Rate: keine Tilgung */
+        interestY += int; principalY += prin; bal = Math.max(0, bal - prin);
+      }
+    }
+    const { erg, wirkung } = monthTax(interestY, rentEffY);
+    const paidAnnuity = annuityY > 0 ? interestY + principalY : 0;
+    const cashY = rentEffY - paidAnnuity - opsCashY - wirkung; /* echter Netto-Cashflow n. St. */
+    kumCash += cashY;
+    val = val * (1 + propGrowth);
+    rows.push({
+      year: yr, rest: Math.round(bal), wert: Math.round(val),
+      equity: Math.round(val - bal), kum: Math.round(kumCash),
+    });
+    if (yr === 1) { interestY1 = interestY; rentEffY1 = rentEffY; tilgY1 = principalY; }
+    rentEffY = rentEffY * (1 + rentGrowth);
+  }
+
+  /* Jahr-1-Snapshot */
+  const { erg: ergJ1, wirkung: steuerJ1 } = monthTax(interestY1, rentEffY1);
+  const paidAnnuityY1 = annuityY > 0 ? interestY1 + tilgY1 : 0;
+  const cashBeforeTaxY = rentEffY1 - paidAnnuityY1 - opsCashY;
+  const cashAfterTaxY = cashBeforeTaxY - steuerJ1;
+
+  return {
+    price, nk, nkPct, invest, loan0, annuityY, area,
+    grestPct, notarPct, maklerPct,
+    afaBase, afaY, opsCashY, opsDeductY, rentM, rentY,
+    interestY1, tilgY1, ergJ1, steuerJ1,
+    cashBeforeTaxM: cashBeforeTaxY / 12,
+    cashAfterTaxM: cashAfterTaxY / 12,
+    grossYield: price > 0 ? (rentY / price) * 100 : 0,
+    netYield: invest > 0 ? ((rentEffY1 - opsCashY) / invest) * 100 : 0,
+    factor: rentY > 0 ? price / rentY : 0,
+    equityYield: equity > 0 ? ((cashAfterTaxY + tilgY1 + price * propGrowth) / equity) * 100 : 0,
+    equity, hasIncome, usedRate: hasIncome ? null : flatRate,
+    rows, horizon,
+    verdict: cashAfterTaxY > 30 ? "pos" : cashAfterTaxY < -30 ? "neg" : "flat",
+  };
+}
+
+/* ---------- kleine UI-Helfer ---------- */
+const InfoNote = ({ children }) => (
+  <div className="fc-detail-note" style={{ marginTop: 10 }}>{children}</div>
+);
+const Kpi = ({ label, value, color }) => (
+  <div style={{ flex: 1, background: C.soft, borderRadius: 12, padding: "10px 12px" }}>
+    <div style={{ fontSize: 11.5, color: C.muted }}>{label}</div>
+    <div style={{ fontSize: 17, fontWeight: 600, color: color || C.ink, marginTop: 2 }}>{value}</div>
+  </div>
+);
+const Collapse = ({ title, icon: Ic, open, onToggle, children }) => (
+  <div style={{ border: `1px solid ${C.hairline}`, borderRadius: 14, marginBottom: 10, overflow: "hidden" }}>
+    <button
+      type="button"
+      onClick={onToggle}
+      style={{
+        width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "13px 14px",
+        background: "none", border: "none", cursor: "pointer", font: "inherit", color: C.ink,
+      }}
+    >
+      {Ic && <Ic size={17} strokeWidth={1.9} color={C.muted} />}
+      <span style={{ fontSize: 14.5, fontWeight: 500, flex: 1, textAlign: "left" }}>{title}</span>
+      <ChevronDown size={17} strokeWidth={2} color={C.muted} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .18s" }} />
+    </button>
+    {open && <div style={{ padding: "2px 14px 14px" }}>{children}</div>}
+  </div>
+);
+
+/* ---------- Haupt-Komponente ---------- */
+function PropertyCalculator({ settings, onSaveSettings, onAdopt, fxRates = { EUR: 1, USD: 1, CHF: 1 } }) {
+  const [i, setI] = useState({
+    price: "", state: settings.taxState || "bw", area: "", buildingPct: "",
+    grestPct: "", notarPct: "", makler: false, maklerPct: "",
+    equity: "", financeNk: false, zins: "", tilgung: "",
+    rent: "", rentPerM2: "", rentGrowth: "", vacancy: "", propGrowth: "",
+    costMode: "pauschal", opsPct: "", maintPerM2: "", maintYear: "", mgmtM: "", otherM: "",
+    afaPct: "", horizon: "", flatRate: "",
+  });
+  const set = (patch) => setI((p) => ({ ...p, ...patch }));
+
+  /* Steuerprofil lebt zentral in den Profil-Einstellungen. Gehalt kann in einer
+     beliebigen Währung stehen (Grenzgänger) und wird über die Kurse in die
+     Systemwährung umgerechnet, bevor der Tarif greift. */
+  const sysCur = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
+  const incCcy = settings.taxIncomeCcy || sysCur;
+  const incRaw = settings.taxIncome;
+  const incConv = (incRaw === "" || incRaw == null)
+    ? ""
+    : (Number(incRaw) || 0) * (incCcy === sysCur ? 1 : (fxRates[incCcy] || 1));
+  const prof = {
+    taxIncome: incConv, splitting: !!settings.splitting,
+    taxState: settings.taxState || i.state, church: !!settings.church,
+    kids: settings.kids ?? "", birth: settings.birth || "",
+  };
+
+  const [open, setOpen] = useState({ obj: true, nk: false, fin: false, rent: false, ops: false, afa: false, tax: false });
+  const toggle = (k) => setOpen((o) => ({ ...o, [k]: !o[k] }));
+
+  const a = useMemo(() => objektAnalyse(i, prof), [i, settings, fxRates]);
+  const enough = n(i.price) > 0 && (n(i.rent) > 0 || (n(i.rentPerM2) > 0 && n(i.area) > 0));
+
+  const bl = blOf(i.state);
+  const vColor = a.verdict === "pos" ? C.positive : a.verdict === "neg" ? C.rausch : C.muted;
+  const vLabel = a.verdict === "pos" ? "Cashflow-positiv" : a.verdict === "neg" ? "Zuzahlung nötig" : "Selbstträger";
+  const cf = Math.round(a.cashAfterTaxM);
+
+  const chart = a.rows.map((r) => ({ ...r }));
+  const compact = (v) => (Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(1).replace(".", ",") + " Mio" : Math.round(v / 1e3) + "k");
+
+  return (
+    <div className="fc-form">
+      {/* ---- Objekt ---- */}
+      <Collapse title="Objekt & Kaufpreis" icon={Home} open={open.obj} onToggle={() => toggle("obj")}>
+        <Field label={`Kaufpreis (${curSym()})`}>
+          <NumInput value={i.price} onChange={(v) => set({ price: v })} placeholder="0" autoFocus />
+        </Field>
+        <div className="fc-row2">
+          <Field label="Bundesland">
+            <select value={i.state} onChange={(e) => set({ state: e.target.value })}>
+              {BUNDESLAENDER.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Wohnfläche (m²)">
+            <NumInput value={i.area} onChange={(v) => set({ area: v })} placeholder="optional" />
+          </Field>
+        </div>
+      </Collapse>
+
+      {/* ---- Kaufnebenkosten ---- */}
+      <Collapse title={`Kaufnebenkosten · ${a.nkPct.toFixed(1).replace(".", ",")} %`} icon={Receipt} open={open.nk} onToggle={() => toggle("nk")}>
+        <div className="fc-row2">
+          <Field label="Grunderwerbsteuer (%)">
+            <NumInput value={i.grestPct} onChange={(v) => set({ grestPct: v })} placeholder={bl ? String(bl.grest).replace(".", ",") : "5"} />
+          </Field>
+          <Field label="Notar & Grundbuch (%)">
+            <NumInput value={i.notarPct} onChange={(v) => set({ notarPct: v })} placeholder="2" />
+          </Field>
+        </div>
+        <button type="button" className="fc-check" onClick={() => set({ makler: !i.makler })}>
+          <span className={`box ${i.makler ? "on" : ""}`}>{i.makler && <Check size={13} strokeWidth={3} />}</span>
+          <span>Maklerprovision einrechnen</span>
+        </button>
+        {i.makler && (
+          <Field label="Maklerprovision (%)">
+            <NumInput value={i.maklerPct} onChange={(v) => set({ maklerPct: v })} placeholder="3,57" />
+          </Field>
+        )}
+        <InfoNote>
+          Grunderwerbsteuer ist für {bl ? bl.label : "das Bundesland"} vorbelegt ({(bl ? bl.grest : 5).toString().replace(".", ",")} %).
+          Summe der Nebenkosten: <b>{eur(a.nk)}</b>.
+        </InfoNote>
+      </Collapse>
+
+      {/* ---- Finanzierung ---- */}
+      <Collapse title="Finanzierung" icon={Landmark} open={open.fin} onToggle={() => toggle("fin")}>
+        <div className="fc-row2">
+          <Field label={`Eigenkapital (${curSym()})`}>
+            <NumInput value={i.equity} onChange={(v) => set({ equity: v })} placeholder="0" />
+          </Field>
+          <Field label="Sollzins (% p. a.)">
+            <NumInput value={i.zins} onChange={(v) => set({ zins: v })} placeholder="z. B. 3,8" />
+          </Field>
+        </div>
+        <Field label="Tilgung pro Jahr (%)">
+          <NumInput value={i.tilgung} onChange={(v) => set({ tilgung: v })} placeholder="z. B. 2" />
+        </Field>
+        <InfoNote>
+          Anteil der Darlehenssumme, der im Jahr getilgt wird – zusätzlich zum Zins. Zins + Tilgung ergeben zusammen deine monatliche Rate.
+        </InfoNote>
+        <button type="button" className="fc-check" onClick={() => set({ financeNk: !i.financeNk })}>
+          <span className={`box ${i.financeNk ? "on" : ""}`}>{i.financeNk && <Check size={13} strokeWidth={3} />}</span>
+          <span>Kaufnebenkosten mitfinanzieren</span>
+        </button>
+        <InfoNote>Darlehen: <b>{eur(a.loan0)}</b> · Annuität <b>{eur(a.annuityY / 12)}</b>/Monat</InfoNote>
+      </Collapse>
+
+      {/* ---- Miete ---- */}
+      <Collapse title="Mieteinnahmen" icon={Wallet} open={open.rent} onToggle={() => toggle("rent")}>
+        <div className="fc-row2">
+          <Field label={`Kaltmiete/Monat (${curSym()})`}>
+            <NumInput value={i.rent} onChange={(v) => set({ rent: v })} placeholder="0" />
+          </Field>
+          <Field label={`oder €/m²`}>
+            <NumInput value={i.rentPerM2} onChange={(v) => set({ rentPerM2: v })} placeholder="optional" />
+          </Field>
+        </div>
+      </Collapse>
+
+      {/* ---- Nicht umlagefähige Kosten ---- */}
+      <Collapse title="Nicht umlagefähige Kosten" icon={Repeat} open={open.ops} onToggle={() => toggle("ops")}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <Btn kind={(i.costMode || "pauschal") === "pauschal" ? "primary" : "ghost"} onClick={() => set({ costMode: "pauschal" })} style={{ flex: 1 }}>Pauschal</Btn>
+          <Btn kind={i.costMode === "detail" ? "primary" : "ghost"} onClick={() => set({ costMode: "detail" })} style={{ flex: 1 }}>Detailliert</Btn>
+        </div>
+        {(i.costMode || "pauschal") === "pauschal" ? (
+          <>
+            <Field label="Anteil der Kaltmiete (%)">
+              <NumInput value={i.opsPct} onChange={(v) => set({ opsPct: v })} placeholder="25" />
+            </Field>
+            <InfoNote>
+              Deckt Verwaltung, Instandhaltungsrücklage und Mietausfallwagnis in einem Wert ab (Richtwert 20–25 %) –
+              aktuell <b>{eur(a.opsCashY / 12)}</b>/Monat. Für die exakte steuerliche Behandlung der Rücklage wechsle zu „Detailliert“.
+            </InfoNote>
+          </>
+        ) : (
+          <>
+            <div className="fc-row2">
+              <Field label="Instandhaltungsrücklage (€/m²/Jahr)">
+                <NumInput value={i.maintPerM2} onChange={(v) => set({ maintPerM2: v })} placeholder="z. B. 10" />
+              </Field>
+              <Field label="oder pauschal/Jahr">
+                <NumInput value={i.maintYear} onChange={(v) => set({ maintYear: v })} placeholder="optional" />
+              </Field>
+            </div>
+            <div className="fc-row2">
+              <Field label="Verwaltung (€/Monat)">
+                <NumInput value={i.mgmtM} onChange={(v) => set({ mgmtM: v })} placeholder="z. B. 25" />
+              </Field>
+              <Field label="Sonstige nicht umlagefähige (€/Monat)">
+                <NumInput value={i.otherM} onChange={(v) => set({ otherM: v })} placeholder="0" />
+              </Field>
+            </div>
+            <InfoNote>
+              Die Instandhaltungsrücklage mindert den Cashflow, ist steuerlich aber erst bei tatsächlicher Ausgabe absetzbar –
+              deshalb zählt sie hier nicht zu den Werbungskosten. Verwaltung und sonstige laufende Kosten mindern Cashflow und Steuer.
+            </InfoNote>
+          </>
+        )}
+      </Collapse>
+
+      {/* ---- AfA ---- */}
+      <Collapse title={`Abschreibung (AfA)`} icon={Percent} open={open.afa} onToggle={() => toggle("afa")}>
+        <Field label="Gebäudeanteil (%) – nur dieser ist abschreibbar">
+          <NumInput value={i.buildingPct} onChange={(v) => set({ buildingPct: v })} placeholder="80" />
+        </Field>
+        <Field label="AfA-Satz (% pro Jahr)">
+          <NumInput value={i.afaPct} onChange={(v) => set({ afaPct: v })} placeholder="2" />
+        </Field>
+        <InfoNote>
+          Standard 2 % (Baujahr ab 1925), 2,5 % Altbau, 3 % Neubau ab 2023. Bemessung = Gebäudeanteil × Gesamtinvestition =
+          <b> {eur(a.afaBase)}</b> → AfA <b>{eur(a.afaY)}</b>/Jahr.
+        </InfoNote>
+      </Collapse>
+
+      {/* ---- Steuer ---- */}
+      <Collapse title="Steuer" icon={Percent} open={open.tax} onToggle={() => toggle("tax")}>
+        {a.hasIncome ? (
+          <InfoNote>
+            Die Steuer wird aus deinem Profil berechnet (Einkommen, Splitting, Kirche, Kinder). Ändern kannst du das im Tab <b>Profil</b>.
+          </InfoNote>
+        ) : (
+          <>
+            <Field label="Grenzsteuersatz (grob, %)">
+              <NumInput value={i.flatRate} onChange={(v) => set({ flatRate: v })} placeholder="42" />
+            </Field>
+            <InfoNote>
+              Für die exakte Berechnung (Tarif 2026 inkl. Splitting, Kirche, Soli, Kinderfreibeträge) hinterlege dein zu versteuerndes
+              Einkommen im Tab <b>Profil</b>. Ohne Angabe rechnet die App mit dem groben Grenzsteuersatz oben.
+            </InfoNote>
+          </>
+        )}
+      </Collapse>
+
+      {/* ================= ERGEBNIS ================= */}
+      {!enough ? (
+        <InfoNote>Trage mindestens Kaufpreis und Kaltmiete ein – dann erscheint das Ergebnis. Alles Weitere macht es nur genauer.</InfoNote>
+      ) : (
+        <>
+          <div style={{ background: a.verdict === "pos" ? "rgba(31,122,77,0.10)" : a.verdict === "neg" ? "rgba(255,56,92,0.10)" : C.soft, borderRadius: 16, padding: 18, textAlign: "center", margin: "6px 0 14px" }}>
+            <div style={{ fontSize: 12.5, color: vColor, marginBottom: 2 }}>Cashflow nach Steuer</div>
+            <div style={{ fontSize: 30, fontWeight: 700, color: vColor, lineHeight: 1.1 }}>
+              {cf > 0 ? "+" : ""}{eur(cf)}<span style={{ fontSize: 15, fontWeight: 500 }}> /Monat</span>
+            </div>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, marginTop: 9, background: vColor, color: "#fff", fontSize: 12.5, padding: "4px 13px", borderRadius: 20 }}>
+              {a.verdict === "pos" ? <Check size={13} strokeWidth={3} /> : a.verdict === "neg" ? <ArrowDownWideNarrow size={13} /> : <Repeat size={13} />}
+              {vLabel}
+            </span>
+            <div style={{ fontSize: 11.5, color: C.muted, marginTop: 8 }}>
+              vor Steuer {eur(a.cashBeforeTaxM)}/M · Steuereffekt {a.steuerJ1 <= 0 ? "+" : "−"}{eur(Math.abs(a.steuerJ1 / 12))}/M
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <Kpi label="Bruttorendite" value={`${a.grossYield.toFixed(1).replace(".", ",")} %`} />
+            <Kpi label="Kaufpreisfaktor" value={a.factor.toFixed(1).replace(".", ",")} />
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+            <Kpi label="Nettorendite" value={`${a.netYield.toFixed(1).replace(".", ",")} %`} />
+            <Kpi label="EK-Rendite" value={a.equity > 0 ? `${a.equityYield.toFixed(1).replace(".", ",")} %` : "–"} color={a.equityYield >= 0 ? C.positive : C.rausch} />
+          </div>
+
+          {/* Verlaufs-Chart: Vermögensaufbau */}
+          <div className="fc-detail-sec">Vermögensaufbau über {a.horizon} Jahre</div>
+          <div style={{ width: "100%", height: 210, marginTop: 6 }}>
+            <ResponsiveContainer>
+              <LineChart data={chart} margin={{ top: 6, right: 10, bottom: 0, left: 0 }}>
+                <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
+                <XAxis dataKey="year" tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} tickFormatter={(y) => `${y}J`} minTickGap={22} />
+                <YAxis width={48} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} tickFormatter={compact} />
+                <Tooltip
+                  formatter={(v, name) => [eurFull(v), name]}
+                  labelFormatter={(y) => `Jahr ${y}`}
+                  contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 12.5, boxShadow: SHADOW }}
+                  labelStyle={{ color: C.muted }}
+                />
+                <Line type="monotone" dataKey="wert" name="Objektwert" stroke={C.luxe} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="rest" name="Restschuld" stroke={C.rausch} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="equity" name="Eigenkapital" stroke={C.positive} strokeWidth={2.4} dot={false} />
+                <Line type="monotone" dataKey="kum" name="Kum. Cashflow" stroke={C.muted} strokeWidth={1.6} strokeDasharray="4 4" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <InfoNote>
+            Ab dem 10. Jahr ist ein Verkauf i. d. R. steuerfrei (Spekulationsfrist). Zahlen sind eine Schätzung, keine Steuerberatung.
+          </InfoNote>
+
+          <div style={{ marginTop: 16 }}>
+            <Btn
+              onClick={() => onAdopt({
+                type: "immobilie", name: i.state ? `Objekt ${blOf(i.state)?.label || ""}`.trim() : "Immobilie",
+                buyPrice: Math.round(a.price), price: Math.round(a.price),
+                buyDate: todayIso(), valMode: n(i.propGrowth) ? "rate" : "value",
+                growth: n(i.propGrowth), symbol: "", qty: 1, inChart: true,
+              })}
+            >
+              Als Objekt ins Portfolio übernehmen
+            </Btn>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [data, setData] = useState(() => loadLS(DATA_KEY, EMPTY));
-  const [settings, setSettings] = useState(() => loadLS(SETTINGS_KEY, { finnhubKey: "", currency: "EUR", theme: "system", tdKey: "", calcMode: "surplus", chartBenchmarks: ["sp500"], chartRange: "6M", chartMode: "value", investSort: "size" }));
+  const [settings, setSettings] = useState(() => loadLS(SETTINGS_KEY, { finnhubKey: "", currency: "EUR", theme: "system", tdKey: "", calcMode: "surplus", chartBenchmarks: ["sp500"], chartRange: "6M", chartMode: "value", investSort: "size", taxIncome: "", splitting: false, taxState: "bw", church: false, kids: "", birth: "" }));
   CUR = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
   const [tab, setTab] = useState("home");
   const [costView, setCostView] = useState("fix");
@@ -3288,11 +3761,16 @@ export default function App() {
             {tab === "expenses" && (costView === "fix" ? "Fixkosten" : "Variable Kosten")}
             {tab === "credits" && "Kredite"}
             {tab === "invest" && "Investments"}
+            {tab === "profil" && "Profil"}
           </h1>
         </div>
-        <button className="fc-gear" onClick={() => setSheet({ type: "settings" })} aria-label="Einstellungen">
-          <Settings size={18} strokeWidth={1.75} />
-        </button>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          {tab === "invest" && (
+            <button className="fc-gear" onClick={() => setSheet({ type: "objektcheck" })} aria-label="Objekt-Check" title="Immobilien-Objekt-Check">
+              <Calculator size={18} strokeWidth={1.75} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ---------- Übersicht ---------- */}
@@ -3959,7 +4437,7 @@ export default function App() {
         );
       })()}
       {sheet?.type === "cats" && (
-        <Sheet title="Kategorien" onClose={() => setSheet({ type: "settings" })}>
+        <Sheet title="Kategorien" onClose={() => setSheet(null)}>
           <CatManager
             sections={[
               { kind: "fix", label: "Fixkosten", list: fixCats },
@@ -3980,6 +4458,16 @@ export default function App() {
             initial={sheet.item || sheet.preset}
             onSave={(f) => { save("investments", f); if (sheet.back) setSheet({ type: "group", gkey: sheet.back }); if (sheet.backCash) setSheet({ type: "cash", id: sheet.backCash }); }}
             finnhubKey={settings.finnhubKey}
+          />
+        </Sheet>
+      )}
+      {sheet?.type === "objektcheck" && (
+        <Sheet title="Objekt-Check" onClose={() => setSheet(null)}>
+          <PropertyCalculator
+            settings={settings}
+            fxRates={fxRates}
+            onSaveSettings={(patch) => setSettings((x) => ({ ...x, ...patch }))}
+            onAdopt={(inv) => { save("investments", inv); setSheet(null); }}
           />
         </Sheet>
       )}
@@ -4019,8 +4507,67 @@ export default function App() {
           </Sheet>
         );
       })()}
-      {sheet?.type === "settings" && (
-        <Sheet title="Einstellungen" onClose={() => setSheet(null)}>
+      {tab === "profil" && (
+        <>
+          <SectionTitle>Steuerliches Profil</SectionTitle>
+          <Card>
+            <Field label="Zu versteuerndes Einkommen / Jahr">
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <NumInput value={settings.taxIncome ?? ""} onChange={(v) => setSettings({ ...settings, taxIncome: v })} placeholder="optional" />
+                </div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {CURRENCIES.map((c) => (
+                    <Btn
+                      key={c}
+                      small
+                      kind={(settings.taxIncomeCcy || (CURRENCIES.includes(settings.currency) ? settings.currency : "EUR")) === c ? "primary" : "ghost"}
+                      onClick={() => setSettings({ ...settings, taxIncomeCcy: c })}
+                      style={{ minWidth: 44 }}
+                    >{c}</Btn>
+                  ))}
+                </div>
+              </div>
+            </Field>
+            {(() => {
+              const sysCur = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
+              const incCcy = settings.taxIncomeCcy || sysCur;
+              if (incCcy === sysCur || !(Number(settings.taxIncome) > 0)) return null;
+              const conv = (Number(settings.taxIncome) || 0) * (fxRates[incCcy] || 1);
+              return (
+                <div style={{ fontSize: 12.5, lineHeight: 1.4, color: C.muted, margin: "-6px 0 14px" }}>
+                  ≈ {eur(conv)} zum aktuellen Kurs – mit diesem Betrag rechnet die Steuerschätzung (Systemwährung {sysCur}).
+                </div>
+              );
+            })()}
+            <div className="fc-row2">
+              <Field label="Wohnsitz (Bundesland)">
+                <select value={settings.taxState || "bw"} onChange={(e) => setSettings({ ...settings, taxState: e.target.value })}>
+                  {BUNDESLAENDER.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}
+                </select>
+              </Field>
+              <Field label="Kinder (Freibeträge)">
+                <NumInput value={settings.kids ?? ""} onChange={(v) => setSettings({ ...settings, kids: v })} placeholder="0" />
+              </Field>
+            </div>
+            <Field label="Geburtsdatum">
+              <input type="date" value={settings.birth || ""} onChange={(e) => setSettings({ ...settings, birth: e.target.value })} />
+            </Field>
+            <button type="button" className="fc-check" onClick={() => setSettings({ ...settings, splitting: !settings.splitting })}>
+              <span className={`box ${settings.splitting ? "on" : ""}`}>{settings.splitting && <Check size={13} strokeWidth={3} />}</span>
+              <span>Verheiratet / Zusammenveranlagung (Splitting)</span>
+            </button>
+            <button type="button" className="fc-check" onClick={() => setSettings({ ...settings, church: !settings.church })}>
+              <span className={`box ${settings.church ? "on" : ""}`}>{settings.church && <Check size={13} strokeWidth={3} />}</span>
+              <span>Kirchensteuerpflichtig ({blOf(settings.taxState || "bw")?.kist || 9} %)</span>
+            </button>
+            <div style={{ fontSize: 12.5, lineHeight: 1.4, color: C.muted, marginTop: 4 }}>
+              Optional und nur auf diesem Gerät gespeichert. Diese Angaben machen die Steuerschätzung im Objekt-Check – und in künftigen Modulen – genauer.
+            </div>
+          </Card>
+
+          <SectionTitle>Einstellungen</SectionTitle>
+          <Card>
           <Field label="Berechnung der Übersicht">
             <div style={{ display: "flex", gap: 8 }}>
               {[{ id: "surplus", label: "Überschuss" }, { id: "budget", label: "Budget" }].map((o) => (
@@ -4131,7 +4678,8 @@ export default function App() {
           <div style={{ fontSize: 13, lineHeight: 1.45, color: C.muted, marginTop: -6 }}>
             Updates kommen automatisch. Falls die App eine alte Fassung zeigt, hier tippen – das leert den Zwischenspeicher und lädt neu. Deine Daten bleiben erhalten.
           </div>
-        </Sheet>
+          </Card>
+        </>
       )}
 
       {/* ---------- Rückgängig-Leiste ---------- */}
@@ -4153,6 +4701,7 @@ export default function App() {
             { id: "expenses", label: "Kosten", ic: Receipt },
             { id: "credits", label: "Kredite", ic: Landmark },
             { id: "invest", label: "Invest", ic: TrendingUp },
+            { id: "profil", label: "Profil", ic: User },
           ].map((t) => (
             <button key={t.id} className={`fc-tab ${tab === t.id ? "active" : ""}`} onClick={() => { setTab(t.id); setSheet(null); setSearch(""); }}>
               <span className="ic" aria-hidden><t.ic size={20} strokeWidth={1.75} /></span>
