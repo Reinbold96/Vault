@@ -3622,9 +3622,9 @@ export default function App() {
         .fc-sheet{background:${C.canvas};border-radius:20px 20px 0 0;width:100%;max-width:520px;padding:20px 18px 28px;max-height:88vh;overflow-y:auto;}
         .fc-sheet-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;font-size:20px;font-weight:600;letter-spacing:-0.18px;color:${C.ink};}
         .fc-x{background:${C.strong};border:none;border-radius:9999px;width:32px;height:32px;color:${C.ink};font-size:14px;cursor:pointer;}
-        .fc-tabs{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:center;background:${C.canvas};border-top:1px solid ${C.hairline};z-index:40;padding-bottom:env(safe-area-inset-bottom);}
+        .fc-tabs{position:fixed;bottom:0;left:0;right:0;display:flex;justify-content:center;background:${C.canvas};border-top:1px solid ${C.hairline};z-index:40;padding-bottom:max(6px, calc(env(safe-area-inset-bottom) - 12px));}
         .fc-tabs-inner{display:flex;width:100%;max-width:520px;}
-        .fc-tab{flex:1;background:transparent;border:none;color:${C.muted};font-size:11px;font-weight:600;padding:10px 2px 12px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;}
+        .fc-tab{flex:1;background:transparent;border:none;color:${C.muted};font-size:11px;font-weight:600;padding:10px 2px 8px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px;}
         .fc-tab .ic{font-size:18px;line-height:1;}
         .fc-tab .u{width:24px;height:2px;border-radius:1px;background:transparent;margin-top:2px;}
         .fc-tab.active{color:${C.ink};}
