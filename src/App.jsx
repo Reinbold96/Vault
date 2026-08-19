@@ -2899,26 +2899,37 @@ export default function App() {
   useEffect(() => {
     if (!data.incomes.length && !data.expenses.length && !data.credits.length && !data.investments.length) return;
     setData((d) => {
-      const snaps = d.snapshots || [];
+      let snaps = d.snapshots || [];
+      /* Aeltere Snapshots einmalig um den immobilienfreien Wert `sx` ergaenzen
+         (Aktien + Cash − Schulden). `sx` ist von der Wachstumsrate unabhaengig;
+         die Immobilie wird spaeter immer live dazugerechnet. */
+      let migrated = false;
+      snaps = snaps.map((s) => (s.sx == null ? (migrated = true, { ...s, sx: Math.round((Number(s.net) || 0) - propTotalAt(s.m)) }) : s));
       const cur = snaps.find((s) => s.m === monthKey);
       const next = { m: monthKey, net: Math.round(netWorth), pf: Math.round(portfolioValue), debt: Math.round(creditBalance), sx: Math.round(netWorth - propTotalNow) };
-      if (cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt && cur.sx === next.sx) return d;
+      if (!migrated && cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt && cur.sx === next.sx) return d;
       return { ...d, snapshots: [...snaps.filter((s) => s.m !== monthKey), next].sort((a, b) => a.m.localeCompare(b.m)).slice(-120) };
     });
   }, [netWorth, portfolioValue, creditBalance, propTotalNow, monthKey]);
 
   const snapshots = data.snapshots || [];
-  /* Vergleichsbasis: juengster Vormonat mit immobilienfreiem Snapshot (`sx`).
-     Immobilie wird fuer beide Enden mit der aktuellen Rate gerechnet. Aeltere
-     Snapshots ohne `sx` (vor diesem Update aufgezeichnet) dienen nur dem
-     Verlaufschart, nicht dem Vergleich – so verschwindet der alte, durch eine
-     Ratenaenderung entstandene Artefakt-Wert; der Vergleich erscheint wieder,
-     sobald ein sauberer Monat aufgezeichnet ist. */
+  /* Immobilienfreier Wert eines Snapshots (Fallback, falls `sx` mal fehlt). */
+  const sxOf = (s) => (s.sx != null ? s.sx : (Number(s.net) || 0) - propTotalAt(s.m));
+  /* Verlaufsdaten fuer den Chart: die Immobilie wird fuer JEDEN Monat mit der
+     AKTUELLEN Rate gerechnet. Eine Ratenaenderung verbiegt dadurch die ganze
+     Kurve (flacher/steiler), erzeugt aber nie einen Rueckwaerts-Drop – der
+     erreichte Nicht-Immobilien-Teil bleibt, die Immobilie waechst nur vorwaerts. */
+  const chartSnaps = snapshots.map((s) => {
+    const net = Math.round(sxOf(s) + propTotalAt(s.m));
+    return { ...s, net, pf: net + (Number(s.debt) || 0) };
+  });
+  /* Monatsvergleich: juengster Vormonat. Immobilie an beiden Enden mit aktueller
+     Rate -> eine Ratenaenderung zaehlt nie als Verlust, nur echter Zuwachs. */
   const lastMonthSnap = useMemo(() => {
-    const prev = snapshots.filter((s) => s.m < monthKey && s.sx != null);
+    const prev = snapshots.filter((s) => s.m < monthKey);
     return prev.length ? prev[prev.length - 1] : null;
   }, [snapshots, monthKey]);
-  const netDelta = lastMonthSnap ? netWorth - (lastMonthSnap.sx + propTotalAt(lastMonthSnap.m)) : null;
+  const netDelta = lastMonthSnap ? netWorth - (sxOf(lastMonthSnap) + propTotalAt(lastMonthSnap.m)) : null;
   const monthName = (m) => {
     const [y, mm] = m.split("-");
     return `${["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."][Number(mm) - 1]} ${y.slice(2)}`;
@@ -3929,7 +3940,7 @@ export default function App() {
               <Card>
                 <div style={{ width: "100%", height: 190 }}>
                   <ResponsiveContainer>
-                    <LineChart data={snapshots} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
+                    <LineChart data={chartSnaps} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
                       <XAxis dataKey="m" tickFormatter={monthName} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={30} />
                       <YAxis domain={["auto", "auto"]} width={58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline}
