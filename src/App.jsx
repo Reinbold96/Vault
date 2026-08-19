@@ -2866,12 +2866,10 @@ export default function App() {
   const realizedTotal = useMemo(() => groups.reduce((s, g) => s + g.realized, 0), [groups]);
   const gain = portfolioValue - portfolioCost + realizedTotal;
   const netWorth = portfolioValue - creditBalance;
-  /* Immobilien-Anteil am Vermögen – separat gefuehrt, damit eine nachtraegliche
-     Aenderung der Wachstumsrate NICHT rueckwirkend die Monats-Performance
-     verzerrt. Die Rate prognostiziert weiter den Gesamtwert; im Monatsvergleich
-     wird der Immobilienwert aber an BEIDEN Enden mit der aktuellen Rate
-     gerechnet, sodass sich eine reine Korrektur der Rate herausrechnet und nur
-     der echte Zuwachs ueber die verstrichene Zeit zaehlt. */
+  /* Immobilien-Anteil am Vermögen – separat gefuehrt. propTotalNow = heutiger
+     Immobilienwert (Teil des Gesamtvermoegens); propTotalAt(m) = analytischer
+     Immobilienwert im Monat m aus Kaufpreis + AKTUELLER Rate. Damit laesst sich
+     die Immobilie aus dem Monatsvergleich sauber herausrechnen. */
   const propGroupsAll = useMemo(() => groups.filter((g) => g.type === "immobilie"), [groups]);
   const propTotalNow = useMemo(() => propGroupsAll.reduce((s, g) => s + (Number(g.value) || 0), 0), [propGroupsAll]);
   const propTotalAt = (m) => propGroupsAll.reduce((s, g) => s + propValueAt(g.ref, `${m}-15`), 0);
@@ -2889,44 +2887,38 @@ export default function App() {
     return ts.length ? Math.max(...ts) : 0;
   }, [data.investments]);
 
-  /* ---------- Monats-Snapshots: Basis für Delta und Verlauf ---------- */
+  /* ---------- Monats-Snapshots: Basis für Delta und Verlauf ----------
+     Jeder Snapshot speichert zusaetzlich `sx` = Vermoegen OHNE Immobilien
+     (Aktien + Cash − Schulden). Der Immobilienwert wird NIE eingefroren,
+     sondern im Vergleich immer analytisch aus Kaufpreis + AKTUELLER Rate
+     gerechnet – fuer beide Enden. Dadurch kann eine spaetere Aenderung der
+     Wachstumsrate den Monatsvergleich nicht mehr rueckwirkend verzerren:
+     Es zaehlt nur der echte zeitliche Zuwachs, nie ein „Verlust" durch eine
+     korrigierte Rate. */
   const monthKey = new Date().toISOString().slice(0, 7);
   useEffect(() => {
     if (!data.incomes.length && !data.expenses.length && !data.credits.length && !data.investments.length) return;
     setData((d) => {
-      let snaps = d.snapshots || [];
-      /* Einmalige Nachruestung: aelteren Snapshots den damaligen Immobilien-Anteil
-         ergaenzen (zum jetzt geltenden Rate-Stand, der ihrem Aufnahmestand
-         entspricht), damit der Monatsvergleich rate-neutral werden kann. */
-      let migrated = false;
-      snaps = snaps.map((s) => {
-        if (s.prop == null) { migrated = true; return { ...s, prop: Math.round(propTotalAt(s.m)) }; }
-        return s;
-      });
+      const snaps = d.snapshots || [];
       const cur = snaps.find((s) => s.m === monthKey);
-      const next = { m: monthKey, net: Math.round(netWorth), pf: Math.round(portfolioValue), debt: Math.round(creditBalance), prop: Math.round(propTotalNow) };
-      if (!migrated && cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt && cur.prop === next.prop) return d;
+      const next = { m: monthKey, net: Math.round(netWorth), pf: Math.round(portfolioValue), debt: Math.round(creditBalance), sx: Math.round(netWorth - propTotalNow) };
+      if (cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt && cur.sx === next.sx) return d;
       return { ...d, snapshots: [...snaps.filter((s) => s.m !== monthKey), next].sort((a, b) => a.m.localeCompare(b.m)).slice(-120) };
     });
   }, [netWorth, portfolioValue, creditBalance, propTotalNow, monthKey]);
 
   const snapshots = data.snapshots || [];
-  /* Veränderung gegenüber dem letzten abgeschlossenen Monat */
+  /* Vergleichsbasis: juengster Vormonat mit immobilienfreiem Snapshot (`sx`).
+     Immobilie wird fuer beide Enden mit der aktuellen Rate gerechnet. Aeltere
+     Snapshots ohne `sx` (vor diesem Update aufgezeichnet) dienen nur dem
+     Verlaufschart, nicht dem Vergleich – so verschwindet der alte, durch eine
+     Ratenaenderung entstandene Artefakt-Wert; der Vergleich erscheint wieder,
+     sobald ein sauberer Monat aufgezeichnet ist. */
   const lastMonthSnap = useMemo(() => {
-    const prev = snapshots.filter((s) => s.m < monthKey);
+    const prev = snapshots.filter((s) => s.m < monthKey && s.sx != null);
     return prev.length ? prev[prev.length - 1] : null;
   }, [snapshots, monthKey]);
-  /* Vergleichsbasis: Nicht-Immobilien-Teil bleibt eingefroren (echte Kurs-/
-     Cash-Historie), der Immobilienwert wird mit der AKTUELLEN Rate neu auf den
-     Vergleichsmonat gerechnet. Dadurch aendert eine Ratenkorrektur den Vergleich
-     nicht – nur der zeitliche Zuwachs zaehlt. Aeltere Snapshots ohne Immobilien-
-     Anteil fallen auf das bisherige Verhalten zurueck. */
-  const baseNet = lastMonthSnap
-    ? (lastMonthSnap.prop != null
-        ? lastMonthSnap.net - lastMonthSnap.prop + propTotalAt(lastMonthSnap.m)
-        : lastMonthSnap.net)
-    : null;
-  const netDelta = baseNet != null ? netWorth - baseNet : null;
+  const netDelta = lastMonthSnap ? netWorth - (lastMonthSnap.sx + propTotalAt(lastMonthSnap.m)) : null;
   const monthName = (m) => {
     const [y, mm] = m.split("-");
     return `${["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."][Number(mm) - 1]} ${y.slice(2)}`;
