@@ -178,7 +178,7 @@ const TICKER_DOMAINS = {
 };
 
 /* Sichtbare Versionskennung - hilft beim Prüfen, ob das Gerät die neue Fassung hat */
-const APP_VERSION = "38 · 15.08.2026";
+const APP_VERSION = "1.4.0";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -2866,6 +2866,15 @@ export default function App() {
   const realizedTotal = useMemo(() => groups.reduce((s, g) => s + g.realized, 0), [groups]);
   const gain = portfolioValue - portfolioCost + realizedTotal;
   const netWorth = portfolioValue - creditBalance;
+  /* Immobilien-Anteil am Vermögen – separat gefuehrt, damit eine nachtraegliche
+     Aenderung der Wachstumsrate NICHT rueckwirkend die Monats-Performance
+     verzerrt. Die Rate prognostiziert weiter den Gesamtwert; im Monatsvergleich
+     wird der Immobilienwert aber an BEIDEN Enden mit der aktuellen Rate
+     gerechnet, sodass sich eine reine Korrektur der Rate herausrechnet und nur
+     der echte Zuwachs ueber die verstrichene Zeit zaehlt. */
+  const propGroupsAll = useMemo(() => groups.filter((g) => g.type === "immobilie"), [groups]);
+  const propTotalNow = useMemo(() => propGroupsAll.reduce((s, g) => s + (Number(g.value) || 0), 0), [propGroupsAll]);
+  const propTotalAt = (m) => propGroupsAll.reduce((s, g) => s + propValueAt(g.ref, `${m}-15`), 0);
   /* Cash in Anzeigewährung – Basis für Sondertilgung aus Cash */
   const cashInCur = useMemo(() => {
     const c = data.investments.find((x) => x.type === "cash" && (x.ccy || CUR) === CUR);
@@ -2885,13 +2894,21 @@ export default function App() {
   useEffect(() => {
     if (!data.incomes.length && !data.expenses.length && !data.credits.length && !data.investments.length) return;
     setData((d) => {
-      const snaps = d.snapshots || [];
+      let snaps = d.snapshots || [];
+      /* Einmalige Nachruestung: aelteren Snapshots den damaligen Immobilien-Anteil
+         ergaenzen (zum jetzt geltenden Rate-Stand, der ihrem Aufnahmestand
+         entspricht), damit der Monatsvergleich rate-neutral werden kann. */
+      let migrated = false;
+      snaps = snaps.map((s) => {
+        if (s.prop == null) { migrated = true; return { ...s, prop: Math.round(propTotalAt(s.m)) }; }
+        return s;
+      });
       const cur = snaps.find((s) => s.m === monthKey);
-      const next = { m: monthKey, net: Math.round(netWorth), pf: Math.round(portfolioValue), debt: Math.round(creditBalance) };
-      if (cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt) return d;
+      const next = { m: monthKey, net: Math.round(netWorth), pf: Math.round(portfolioValue), debt: Math.round(creditBalance), prop: Math.round(propTotalNow) };
+      if (!migrated && cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt && cur.prop === next.prop) return d;
       return { ...d, snapshots: [...snaps.filter((s) => s.m !== monthKey), next].sort((a, b) => a.m.localeCompare(b.m)).slice(-120) };
     });
-  }, [netWorth, portfolioValue, creditBalance, monthKey]);
+  }, [netWorth, portfolioValue, creditBalance, propTotalNow, monthKey]);
 
   const snapshots = data.snapshots || [];
   /* Veränderung gegenüber dem letzten abgeschlossenen Monat */
@@ -2899,7 +2916,17 @@ export default function App() {
     const prev = snapshots.filter((s) => s.m < monthKey);
     return prev.length ? prev[prev.length - 1] : null;
   }, [snapshots, monthKey]);
-  const netDelta = lastMonthSnap ? netWorth - lastMonthSnap.net : null;
+  /* Vergleichsbasis: Nicht-Immobilien-Teil bleibt eingefroren (echte Kurs-/
+     Cash-Historie), der Immobilienwert wird mit der AKTUELLEN Rate neu auf den
+     Vergleichsmonat gerechnet. Dadurch aendert eine Ratenkorrektur den Vergleich
+     nicht – nur der zeitliche Zuwachs zaehlt. Aeltere Snapshots ohne Immobilien-
+     Anteil fallen auf das bisherige Verhalten zurueck. */
+  const baseNet = lastMonthSnap
+    ? (lastMonthSnap.prop != null
+        ? lastMonthSnap.net - lastMonthSnap.prop + propTotalAt(lastMonthSnap.m)
+        : lastMonthSnap.net)
+    : null;
+  const netDelta = baseNet != null ? netWorth - baseNet : null;
   const monthName = (m) => {
     const [y, mm] = m.split("-");
     return `${["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."][Number(mm) - 1]} ${y.slice(2)}`;
