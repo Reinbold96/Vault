@@ -522,24 +522,22 @@ function cashAtDate(i, d) {
 const yearsBetween = (a, b) => (new Date(b) - new Date(a)) / (365.2425 * 86400000);
 
 /* Wert einer Immobilie an einem Stichtag.
-   Modus "rate": waechst mit der Rate p. a. ab einem ANKER (erreichter Wert +
-   Datum). Ohne expliziten Anker gilt Kaufpreis ab Kaufdatum. Bei einem Raten-
-   wechsel wird auf den bis dahin erreichten Wert neu verankert (growthBase/
-   growthFrom = heute) - dadurch faellt der Wert nie rueckwirkend, die neue Rate
-   wirkt nur vorwaerts.
+   Modus "rate": Kaufpreis ab Kaufdatum mit der AKTUELLEN Rate p. a. verzinst.
+   Die Rate gilt fuer die komplette Historie ab Kauf - aendert man sie, wird der
+   ganze Verlauf mit der neuen Rate gerechnet (keine Zwischenspeicherung alter
+   Werte). Bei 0 % ist der Wert konstant = Kaufpreis.
    Modus "value": glatte Entwicklung vom Kaufpreis zum heute eingetragenen Wert. */
 function propValueAt(i, d) {
   const base = Number(i.buyPrice) || Number(i.price) || 0;
   const start = i.buyDate || "";
   if ((i.valMode || "value") === "rate") {
     const r = (Number(i.growth) || 0) / 100;
-    const anchorVal = Number(i.growthBase) || base;
-    const anchorDate = i.growthFrom || start;
-    if (anchorDate) {
-      return anchorVal * Math.pow(1 + r, yearsBetween(anchorDate, d));
+    if (start) {
+      const y = Math.max(0, yearsBetween(start, d));
+      return base * Math.pow(1 + r, y);
     }
-    /* kein Datum: vom heutigen Wert mit derselben Rate zurückrechnen */
-    const now = Number(i.price) || anchorVal;
+    /* kein Kaufdatum: vom heutigen Wert mit derselben Rate zurückrechnen */
+    const now = Number(i.price) || base;
     return now * Math.pow(1 + r, yearsBetween(todayIso(), d));
   }
   const now = Number(i.price) || base;
@@ -1090,24 +1088,10 @@ function InvestForm({ initial, onSave, finnhubKey }) {
               const valMode = isProp ? (f.valMode === "rate" ? "rate" : "value") : undefined;
               const base = Number(f.buyPrice) || Number(f.price) || 0;
               const growth = Number(f.growth) || 0;
-              /* Anker fuer den "Rate"-Modus bestimmen:
-                 - Bestehende Immobilie bearbeiten: auf den bis heute erreichten
-                   Wert verankern (growthFrom = heute). So bleibt der Wert beim
-                   Aendern der Rate erhalten, die neue Rate wirkt nur vorwaerts.
-                 - Neu anlegen: waechst vom Kaufpreis ab Kaufdatum. */
-              let growthBase, growthFrom;
-              if (isProp && valMode === "rate") {
-                if (initial && (initial.valMode || "value") === "rate") {
-                  growthBase = Number(propValueAt(initial, todayIso()).toFixed(2));
-                  growthFrom = todayIso();
-                } else {
-                  growthBase = base;
-                  growthFrom = f.buyDate || "";
-                }
-              }
+              /* Bei "Rate" ergibt sich der heutige Wert aus Kaufpreis, Datum und Rate */
               const price = isProp
                 ? (valMode === "rate"
-                    ? propValueAt({ buyPrice: base, buyDate: f.buyDate, valMode: "rate", growth, growthBase, growthFrom }, todayIso())
+                    ? propValueAt({ buyPrice: base, buyDate: f.buyDate, valMode: "rate", growth }, todayIso())
                     : Number(f.price) || base)
                 : Number(f.price) || 0;
               onSave({
@@ -1117,8 +1101,8 @@ function InvestForm({ initial, onSave, finnhubKey }) {
                 ccy: f.type === "cash" ? (f.ccy || CUR) : undefined,
                 valMode,
                 growth: isProp ? growth : undefined,
-                growthBase: isProp && valMode === "rate" ? growthBase : undefined,
-                growthFrom: isProp && valMode === "rate" ? growthFrom : undefined,
+                growthBase: undefined,
+                growthFrom: undefined,
                 buyDate: isProp ? (f.buyDate || "") : f.buyDate,
                 price: Number(price.toFixed(2)),
                 buyPrice: f.type === "cash" ? Number(f.price) || 0 : base,
@@ -2900,30 +2884,66 @@ export default function App() {
     return ts.length ? Math.max(...ts) : 0;
   }, [data.investments]);
 
-  /* ---------- Monats-Snapshots: Basis für Delta und Verlauf ----------
-     Der Immobilienwert ist „sticky" (siehe propValueAt/Anker): eine Raten-
-     aenderung senkt ihn nie rueckwirkend. Deshalb koennen Snapshots einfach
-     das eingefrorene Nettovermoegen je Monat speichern – die Historie bleibt
-     stabil, kein Rueckwaerts-Drop im Chart. */
+  /* ---------- Monats-Snapshots & Vermögensverlauf ----------
+     Der Verlauf wird NICHT aus eingefrorenen Netto-Werten gezeichnet, sondern
+     je Monat aus den Bausteinen rekonstruiert:
+       • Cash: exakter Stand am Stichtag (Zuflüsse an ihrem Tag) – kein Zins.
+       • Aktien/ETF/Krypto: historische Kurse (wie im Invest-Chart).
+       • Immobilie: Kaufpreis + AKTUELLE Rate ab Kaufdatum – aendert man die
+         Rate, wird der ganze Verlauf mit der neuen Rate gerechnet (0 % = flach).
+       • Kredite: Restschuld je Monat (Tilgung ist darin schon berücksichtigt).
+     Gespeichert wird zusaetzlich `sx` = Vermögen OHNE Immobilie (Aktien+Cash−
+     Schulden); es ist von der Rate unabhaengig. Fuer aeltere Snapshots ohne `sx`
+     wird der Nicht-Immobilien-Teil aus Cash/Restschuld rekonstruiert (sofern
+     keine Wertpapiere im Spiel sind), sonst behutsam aus dem Altwert. */
+  const cashGroupsNV = groups.filter((g) => g.type === "cash");
+  const propGroupsNV = groups.filter((g) => g.type === "immobilie");
+  const stockGroupsNV = groups.filter((g) => HIST_TYPES.includes(g.type));
+  const monthRef = (m) => {
+    if (m === monthKey) return todayIso();
+    const [y, mm] = m.split("-").map(Number);
+    const last = new Date(y, mm, 0).getDate();
+    return `${m}-${String(last).padStart(2, "0")}`;
+  };
+  const cashSumAt = (d) => cashGroupsNV.reduce((s, g) => s + cashAtDate(g.ref, d) * (fxRates[g.ref.ccy || CUR] || 1), 0);
+  const propSumAt = (d) => propGroupsNV.reduce((s, g) => s + propValueAt(g.ref, d), 0);
+  const propNow = propSumAt(todayIso());
+
   const monthKey = new Date().toISOString().slice(0, 7);
   useEffect(() => {
     if (!data.incomes.length && !data.expenses.length && !data.credits.length && !data.investments.length) return;
     setData((d) => {
       const snaps = d.snapshots || [];
       const cur = snaps.find((s) => s.m === monthKey);
-      const next = { m: monthKey, net: Math.round(netWorth), pf: Math.round(portfolioValue), debt: Math.round(creditBalance) };
-      if (cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt) return d;
+      const next = { m: monthKey, net: Math.round(netWorth), pf: Math.round(portfolioValue), debt: Math.round(creditBalance), sx: Math.round(netWorth - propNow) };
+      if (cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt && cur.sx === next.sx) return d;
       return { ...d, snapshots: [...snaps.filter((s) => s.m !== monthKey), next].sort((a, b) => a.m.localeCompare(b.m)).slice(-120) };
     });
-  }, [netWorth, portfolioValue, creditBalance, monthKey]);
+  }, [netWorth, portfolioValue, creditBalance, propNow, monthKey]);
 
   const snapshots = data.snapshots || [];
-  /* Veränderung gegenüber dem letzten abgeschlossenen Monat */
+  /* Nicht-Immobilien-Teil eines Monats (rate-unabhaengig). */
+  const sxOf = (s) => {
+    /* Ohne Wertpapiere ist der Nicht-Immobilien-Teil exakt aus Cash minus
+       Restschuld rekonstruierbar - so sauber, dass evtl. alte, mit einer anderen
+       Rate zwischengespeicherte Werte gar nicht erst benutzt werden. */
+    if (stockGroupsNV.length === 0) return cashSumAt(monthRef(s.m)) - (Number(s.debt) || 0);
+    if (s.sx != null) return s.sx;
+    return (Number(s.net) || 0) - propSumAt(monthRef(s.m));
+  };
+  /* Nettovermögen eines Monats = Nicht-Immobilie + Immobilie zur AKTUELLEN Rate. */
+  const nvAt = (s) => (s.m === monthKey ? netWorth : sxOf(s) + propSumAt(monthRef(s.m)));
+  const chartSnaps = snapshots.map((s) => {
+    const net = Math.round(nvAt(s));
+    return { ...s, net, pf: net + (Number(s.debt) || 0) };
+  });
+  /* Veränderung gegenüber dem letzten abgeschlossenen Monat (gleiche Rechnung
+     fuer beide Monate -> eine Ratenaenderung zaehlt nie als Verlust). */
   const lastMonthSnap = useMemo(() => {
     const prev = snapshots.filter((s) => s.m < monthKey);
     return prev.length ? prev[prev.length - 1] : null;
   }, [snapshots, monthKey]);
-  const netDelta = lastMonthSnap ? netWorth - lastMonthSnap.net : null;
+  const netDelta = lastMonthSnap ? netWorth - nvAt(lastMonthSnap) : null;
   const monthName = (m) => {
     const [y, mm] = m.split("-");
     return `${["Jan.", "Feb.", "März", "Apr.", "Mai", "Juni", "Juli", "Aug.", "Sept.", "Okt.", "Nov.", "Dez."][Number(mm) - 1]} ${y.slice(2)}`;
@@ -3934,7 +3954,7 @@ export default function App() {
               <Card>
                 <div style={{ width: "100%", height: 190 }}>
                   <ResponsiveContainer>
-                    <LineChart data={snapshots} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
+                    <LineChart data={chartSnaps} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
                       <XAxis dataKey="m" tickFormatter={monthName} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={30} />
                       <YAxis domain={["auto", "auto"]} width={58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline}
