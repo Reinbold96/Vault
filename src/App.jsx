@@ -2907,7 +2907,23 @@ export default function App() {
   };
   const cashSumAt = (d) => cashGroupsNV.reduce((s, g) => s + cashAtDate(g.ref, d) * (fxRates[g.ref.ccy || CUR] || 1), 0);
   const propSumAt = (d) => propGroupsNV.reduce((s, g) => s + propValueAt(g.ref, d), 0);
-  const propNow = propSumAt(todayIso());
+  /* Wertpapier-Wert an einem Stichtag aus der Kurshistorie (letzter Kurs ≤ d).
+     Fehlt Historie fuer eine Position, gilt ersatzweise ihr aktueller Kurs. */
+  const histNV = loadHist();
+  const priceLE = (series, d) => {
+    let best = null;
+    for (const k in series) { if (k <= d && (best === null || k > best)) best = k; }
+    return best === null ? null : series[best];
+  };
+  const stockSumAt = (d) => stockGroupsNV.reduce((sum, g) => {
+    const pos = fifoAt(g.lots, g.sells, d);
+    if (pos.openQty <= 1e-9) return sum;
+    const h = histNV[histKeyOf(g, CUR)];
+    let px = h && h.series ? priceLE(h.series, d) : null;
+    let rate = h && h.ccy && h.ccy !== CUR ? (fxRates[h.ccy] || 1) : 1;
+    if (px == null) { px = Number(g.price) || 0; rate = 1; }
+    return sum + pos.openQty * px * rate;
+  }, 0);
 
   const monthKey = new Date().toISOString().slice(0, 7);
   useEffect(() => {
@@ -2915,24 +2931,19 @@ export default function App() {
     setData((d) => {
       const snaps = d.snapshots || [];
       const cur = snaps.find((s) => s.m === monthKey);
-      const next = { m: monthKey, net: Math.round(netWorth), pf: Math.round(portfolioValue), debt: Math.round(creditBalance), sx: Math.round(netWorth - propNow) };
-      if (cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt && cur.sx === next.sx) return d;
+      const next = { m: monthKey, net: Math.round(netWorth), pf: Math.round(portfolioValue), debt: Math.round(creditBalance) };
+      if (cur && cur.net === next.net && cur.pf === next.pf && cur.debt === next.debt) return d;
       return { ...d, snapshots: [...snaps.filter((s) => s.m !== monthKey), next].sort((a, b) => a.m.localeCompare(b.m)).slice(-120) };
     });
-  }, [netWorth, portfolioValue, creditBalance, propNow, monthKey]);
+  }, [netWorth, portfolioValue, creditBalance, monthKey]);
 
   const snapshots = data.snapshots || [];
-  /* Nicht-Immobilien-Teil eines Monats (rate-unabhaengig). */
-  const sxOf = (s) => {
-    /* Ohne Wertpapiere ist der Nicht-Immobilien-Teil exakt aus Cash minus
-       Restschuld rekonstruierbar - so sauber, dass evtl. alte, mit einer anderen
-       Rate zwischengespeicherte Werte gar nicht erst benutzt werden. */
-    if (stockGroupsNV.length === 0) return cashSumAt(monthRef(s.m)) - (Number(s.debt) || 0);
-    if (s.sx != null) return s.sx;
-    return (Number(s.net) || 0) - propSumAt(monthRef(s.m));
-  };
-  /* Nettovermögen eines Monats = Nicht-Immobilie + Immobilie zur AKTUELLEN Rate. */
-  const nvAt = (s) => (s.m === monthKey ? netWorth : sxOf(s) + propSumAt(monthRef(s.m)));
+  /* Nettovermögen eines Monats KOMPLETT neu berechnet (nie ein gecachter Wert):
+     Cash (exakt) + Wertpapiere (Kurshistorie) + Immobilie (aktuelle Rate ab
+     Kauf) − Restschuld des Monats. Der laufende Monat nutzt den Live-Wert. */
+  const nvAt = (s) => (s.m === monthKey
+    ? netWorth
+    : cashSumAt(monthRef(s.m)) + stockSumAt(monthRef(s.m)) + propSumAt(monthRef(s.m)) - (Number(s.debt) || 0));
   const chartSnaps = snapshots.map((s) => {
     const net = Math.round(nvAt(s));
     return { ...s, net, pf: net + (Number(s.debt) || 0) };
