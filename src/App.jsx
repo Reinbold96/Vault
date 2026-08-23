@@ -178,7 +178,7 @@ const TICKER_DOMAINS = {
 };
 
 /* Sichtbare Versionskennung - hilft beim Prüfen, ob das Gerät die neue Fassung hat */
-const APP_VERSION = "1.4.0";
+const APP_VERSION = "1.4.1";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -2906,7 +2906,7 @@ export default function App() {
     return `${m}-${String(last).padStart(2, "0")}`;
   };
   const cashSumAt = (d) => cashGroupsNV.reduce((s, g) => s + cashAtDate(g.ref, d) * (fxRates[g.ref.ccy || CUR] || 1), 0);
-  const propSumAt = (d) => propGroupsNV.reduce((s, g) => s + propValueAt(g.ref, d), 0);
+  const propSumAt = (d) => propGroupsNV.reduce((s, g) => (g.ref.buyDate && g.ref.buyDate > d) ? s : s + propValueAt(g.ref, d), 0);
   /* Wertpapier-Wert an einem Stichtag aus der Kurshistorie (letzter Kurs ≤ d).
      Fehlt Historie fuer eine Position, gilt ersatzweise ihr aktueller Kurs. */
   const histNV = loadHist();
@@ -2944,10 +2944,27 @@ export default function App() {
   const nvAt = (s) => (s.m === monthKey
     ? netWorth
     : cashSumAt(monthRef(s.m)) + stockSumAt(monthRef(s.m)) + propSumAt(monthRef(s.m)) - (Number(s.debt) || 0));
-  const chartSnaps = snapshots.map((s) => {
-    const net = Math.round(nvAt(s));
-    return { ...s, net, pf: net + (Number(s.debt) || 0) };
-  });
+  /* Verlaufs-Chart: immer die letzten 3 Monate, jeder Punkt frisch rekonstruiert.
+     Restschuld je Monat aus dem Snapshot (sonst aktuelle Restschuld). */
+  const wealthSeries = (() => {
+    const base = new Date();
+    const out = [];
+    for (let k = 2; k >= 0; k--) {
+      const dt = new Date(base.getFullYear(), base.getMonth() - k, 1);
+      const m = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+      const snap = snapshots.find((s) => s.m === m);
+      const debt = snap ? (Number(snap.debt) || 0) : Math.round(creditBalance);
+      const d = monthRef(m);
+      const net = m === monthKey ? Math.round(netWorth) : Math.round(cashSumAt(d) + stockSumAt(d) + propSumAt(d) - debt);
+      out.push({ m, net });
+    }
+    return out;
+  })();
+  /* Y-Achse eng an den Werteverlauf legen, damit die Entwicklung sichtbar ist. */
+  const yLo = Math.min(...wealthSeries.map((p) => p.net));
+  const yHi = Math.max(...wealthSeries.map((p) => p.net));
+  const yPad = Math.max((yHi - yLo) * 0.18, Math.abs(yHi) * 0.02, 1);
+  const yDomain = [Math.round(yLo - yPad), Math.round(yHi + yPad)];
   /* Veränderung gegenüber dem letzten abgeschlossenen Monat (gleiche Rechnung
      fuer beide Monate -> eine Ratenaenderung zaehlt nie als Verlust). */
   const lastMonthSnap = useMemo(() => {
@@ -3961,29 +3978,28 @@ export default function App() {
 
           {snapshots.length > 1 && (
             <>
-              <SectionTitle right={<span className="fc-sum">{snapshots.length} Monate</span>}>Vermögensverlauf</SectionTitle>
+              <SectionTitle right={<span className="fc-sum">{wealthSeries.length} Monate</span>}>Vermögensverlauf</SectionTitle>
               <Card>
                 <div style={{ width: "100%", height: 190 }}>
                   <ResponsiveContainer>
-                    <LineChart data={chartSnaps} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
+                    <LineChart data={wealthSeries} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid stroke={C.hairlineSoft} vertical={false} />
                       <XAxis dataKey="m" tickFormatter={monthName} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline} minTickGap={30} />
-                      <YAxis domain={["auto", "auto"]} width={58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline}
-                        tickFormatter={(v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1).replace(".", ",")} Mio` : v.toLocaleString(CUR === "CHF" ? "de-CH" : "de-DE"))} />
+                      <YAxis domain={yDomain} width={58} tick={{ fontSize: 10.5, fill: C.mutedSoft }} stroke={C.hairline}
+                        tickFormatter={(v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(1).replace(".", ",")} Mio` : Math.round(v).toLocaleString(CUR === "CHF" ? "de-CH" : "de-DE"))} />
                       <Tooltip
                         labelFormatter={monthName}
-                        formatter={(v, n) => [eurFull(v), n === "net" ? "Nettovermögen" : n === "pf" ? "Vermögen" : "Schulden"]}
+                        formatter={(v) => [eurFull(v), "Nettovermögen"]}
                         contentStyle={{ background: C.canvas, border: `1px solid ${C.hairline}`, borderRadius: 8, color: C.ink, fontSize: 12.5, boxShadow: SHADOW }}
                         labelStyle={{ color: C.muted }}
                         itemStyle={{ color: C.ink }}
                       />
-                      <Line type="monotone" dataKey="net" stroke={C.rausch} strokeWidth={2.4} dot={false} />
-                      <Line type="monotone" dataKey="pf" stroke={C.positive} strokeWidth={1.6} dot={false} strokeDasharray="4 3" />
+                      <Line type="monotone" dataKey="net" stroke={C.rausch} strokeWidth={2.4} dot={{ r: 3, fill: C.rausch, strokeWidth: 0 }} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
                 <div className="fc-detail-note" style={{ marginTop: 8 }}>
-                  Durchgezogen: Nettovermögen · gestrichelt: Vermögen ohne Schulden. Ein Punkt pro Monat, automatisch gespeichert.
+                  Nettovermögen der letzten 3 Monate – jeder Monat frisch aus Cash, Wertpapieren und Immobilie (aktuelle Rate) berechnet.
                 </div>
               </Card>
             </>
