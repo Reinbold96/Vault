@@ -878,7 +878,8 @@ export default function App() {
 
   /* ---------- Backup: Export / Import ---------- */
   const [exportKeys, setExportKeys] = useState(true);
-  const [showKeys, setShowKeys] = useState(false);
+  const [showFhKey, setShowFhKey] = useState(false);
+  const [showTdKey, setShowTdKey] = useState(false);
   function exportData() {
     const payload = buildBackup(data, settings, { includeKeys: exportKeys });
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -1838,25 +1839,30 @@ export default function App() {
           <Field label="Finnhub API-Key">
             <div className="fc-keyrow">
               <input
-                type={showKeys ? "text" : "password"}
+                type={showFhKey ? "text" : "password"}
                 autoComplete="off"
                 value={settings.finnhubKey}
                 onChange={(e) => setSettings({ ...settings, finnhubKey: e.target.value.trim() })}
                 placeholder="z. B. c1a2b3…"
               />
-              <button type="button" className="fc-eye" onClick={() => setShowKeys((v) => !v)} aria-label={showKeys ? "Keys verbergen" : "Keys anzeigen"}>
-                {showKeys ? <EyeOff size={14} strokeWidth={1.9} /> : <Eye size={14} strokeWidth={1.9} />}
+              <button type="button" className="fc-eye" onClick={() => setShowFhKey((v) => !v)} aria-label={showFhKey ? "Finnhub-Key verbergen" : "Finnhub-Key anzeigen"} aria-pressed={showFhKey}>
+                {showFhKey ? <EyeOff size={14} strokeWidth={1.9} /> : <Eye size={14} strokeWidth={1.9} />}
               </button>
             </div>
           </Field>
           <Field label="Twelve Data API-Key">
-            <input
-              type={showKeys ? "text" : "password"}
-              autoComplete="off"
-              value={settings.tdKey || ""}
-              onChange={(e) => setSettings({ ...settings, tdKey: e.target.value.trim() })}
-              placeholder="z. B. abcd1234…"
-            />
+            <div className="fc-keyrow">
+              <input
+                type={showTdKey ? "text" : "password"}
+                autoComplete="off"
+                value={settings.tdKey || ""}
+                onChange={(e) => setSettings({ ...settings, tdKey: e.target.value.trim() })}
+                placeholder="z. B. abcd1234…"
+              />
+              <button type="button" className="fc-eye" onClick={() => setShowTdKey((v) => !v)} aria-label={showTdKey ? "Twelve-Data-Key verbergen" : "Twelve-Data-Key anzeigen"} aria-pressed={showTdKey}>
+                {showTdKey ? <EyeOff size={14} strokeWidth={1.9} /> : <Eye size={14} strokeWidth={1.9} />}
+              </button>
+            </div>
           </Field>
           <div style={{ fontSize: 12.5, lineHeight: 1.4, color: C.muted, margin: "-6px 0 14px" }}>
             Finnhub (kostenlos auf finnhub.io) liefert US-Aktien und -ETFs, Twelve Data (twelvedata.com) europäische Wertpapiere und Öl – dort funktioniert als Ticker auch die ISIN.
