@@ -138,6 +138,7 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
       const chartLots = new Map();
       for (const g of eligible) chartLots.set(g.gkey, g.lots.filter((l) => l.inChart !== false && l.buyDate));
       const rows = [];
+      const flatNames = new Set();
       let twr = 100, prev = null;
       for (const d of dates) {
         let assets = 0, invested = 0, any = false;
@@ -148,12 +149,20 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
           const key = histKeyOf(g, cur);
           const ser = filled[key];
           const raw = ser && ser[d];
-          if (raw == null) continue;
           const h = hist[key];
-          const rate = h && h.ccy && h.ccy !== cur ? (fxFilled[h.ccy] && fxFilled[h.ccy][d]) : 1;
-          if (rate == null) continue;
-          const p = raw * rate;
-          px[g.gkey] = { p, qty: pos.openQty };
+          const rate = raw != null && h && h.ccy && h.ccy !== cur ? (fxFilled[h.ccy] && fxFilled[h.ccy][d]) : 1;
+          let p;
+          if (raw != null && rate != null) {
+            p = raw * rate;
+            px[g.gkey] = { p, qty: pos.openQty }; /* zaehlt in der Renditekette */
+          } else {
+            /* Keine Kurshistorie (z. B. ohne Twelve-Data-Key): Position mit ihrem
+               aktuellen Kurs als konstanten Wert mitzaehlen, statt sie stillschweigend
+               aus dem Chart fallen zu lassen. In die %-Kurve geht sie nicht ein. */
+            if (!(g.price > 0)) continue;
+            p = g.price;
+            flatNames.add(g.name || g.ref.symbol);
+          }
           assets += pos.openQty * p;
           invested += pos.openCost;
           any = true;
@@ -195,6 +204,7 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
         prev = { d, px };
       }
 
+      if (flatNames.size) notes.push(`Ohne Kurshistorie, mit heutigem Kurs gezählt: ${[...flatNames].join(", ")}`);
       setState({ loading: false, rows, notes: [...new Set(notes)], err: rows.length ? "" : "Keine Kursdaten für den Zeitraum gefunden" });
     }
     build();
@@ -363,7 +373,7 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
 
       {state.notes.length > 0 && (
         <div className="fc-chart-note">
-          {state.notes.slice(0, 2).map((n, i) => <div key={i}>{n}</div>)}
+          {state.notes.slice(0, 3).map((n, i) => <div key={i}>{n}</div>)}
         </div>
       )}
     </Card>
