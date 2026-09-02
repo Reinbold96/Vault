@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.1 – 2026-09-02
+
+- **Portfolio-Chart zeigte nur Positionen mit Kurshistorie.** Aktien/ETFs ohne Twelve-Data-Key (oder ohne verfügbare Historie) fielen aus dem Chart-Wert heraus – die Kopfzeile zeigte z. B. 7 308 € bei 13 076 € Portfoliowert. Solche Positionen zählen jetzt mit ihrem aktuellen Kurs als konstanter Wert; in die %-Kurve gehen sie nicht ein. Ein Hinweis unter dem Chart nennt die betroffenen Positionen.
+
 ## 1.5.0 – 2026-09-02
 
 Grosses Wartungs-Release nach Code-Review (23 Findings). Keine Datenmigration nötig – bestehende Daten, Einstellungen und Backups werden weiter gelesen.
