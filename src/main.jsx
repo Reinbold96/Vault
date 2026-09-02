@@ -1,19 +1,27 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/inter/700.css";
+import "./styles.css";
 
-/* Zoom komplett unterbinden, damit sich die App wie eine native App anfuehlt.
-   Nur `user-scalable=no` reicht auf iOS nicht: Safari erlaubt weiterhin Pinch-
-   und Doppeltipp-Zoom. Deshalb die iOS-Gesten aktiv abfangen. `touch-action`
-   im <body> deckt bereits den Doppeltipp ab; hier zusaetzlich der Pinch-Zoom. */
-["gesturestart", "gesturechange", "gestureend"].forEach((ev) =>
-  document.addEventListener(ev, (e) => e.preventDefault(), { passive: false })
-);
-document.addEventListener(
-  "touchmove",
-  (e) => { if (e.touches && e.touches.length > 1) e.preventDefault(); },
-  { passive: false }
-);
+/* Pinch-Zoom nur in der INSTALLIERTEN App unterbinden (Native-Gefühl). Im
+   normalen Browser bleibt Zoom erlaubt – Barrierefreiheit (WCAG 1.4.4). */
+const standalone = (() => {
+  try { return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true; } catch { return false; }
+})();
+if (standalone) {
+  ["gesturestart", "gesturechange", "gestureend"].forEach((ev) =>
+    document.addEventListener(ev, (e) => e.preventDefault(), { passive: false })
+  );
+  document.addEventListener(
+    "touchmove",
+    (e) => { if (e.touches && e.touches.length > 1) e.preventDefault(); },
+    { passive: false }
+  );
+}
 
 /* Tastatur schliessen wie in einer nativen App:
    - Enter/Return in einem einzeiligen Feld gibt den Fokus frei (Textareas
