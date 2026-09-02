@@ -1,20 +1,20 @@
-# Finanz-Cockpit (PWA)
+# Vault (PWA)
 
 Persönliches Finanz-Dashboard: Einnahmen, Fixkosten, Kredite und Investments mit Live-Kursen.
 Installierbar als App auf Android (Pixel), iPhone und Desktop. Keine Domain, kein Backend, keine Kosten.
 
 ## Deployment auf GitHub Pages (einmalig, ~10 Minuten)
 
-1. Auf github.com ein neues **öffentliches** Repository anlegen, z. B. `finanz-cockpit` (ohne README/Lizenz initialisieren).
+1. Auf github.com ein neues **öffentliches** Repository anlegen, z. B. `Vault` (ohne README/Lizenz initialisieren).
 2. Diesen Projektordner entpacken und im Terminal (MacBook) pushen:
 
    ```bash
-   cd finanz-cockpit
+   cd Vault
    git init
    git add .
-   git commit -m "Finanz-Cockpit PWA"
+   git commit -m "Vault PWA"
    git branch -M main
-   git remote add origin https://github.com/DEIN-USERNAME/finanz-cockpit.git
+   git remote add origin https://github.com/DEIN-USERNAME/Vault.git
    git push -u origin main
    ```
 
@@ -22,7 +22,7 @@ Installierbar als App auf Android (Pixel), iPhone und Desktop. Keine Domain, kei
 4. Der mitgelieferte Workflow (`.github/workflows/deploy.yml`) baut und deployt automatisch bei jedem Push.
    Fortschritt unter dem Tab **Actions** verfolgen (~1–2 Minuten).
 5. Die App ist danach erreichbar unter:
-   `https://DEIN-USERNAME.github.io/finanz-cockpit/`
+   `https://DEIN-USERNAME.github.io/Vault/`
 
 ## Installation auf dem Pixel
 
@@ -33,16 +33,17 @@ Installierbar als App auf Android (Pixel), iPhone und Desktop. Keine Domain, kei
 ## Live-Kurse
 
 - **Krypto**: läuft sofort, kostenlos über CoinGecko (kein Key nötig), Kurse direkt in EUR.
-- **Aktien/ETFs**: kostenlosen API-Key auf [finnhub.io](https://finnhub.io) erstellen (E-Mail genügt)
-  und in der App unter **⚙ Einstellungen** eintragen. Kurse kommen in USD und werden zum
-  EZB-Tageskurs (frankfurter.app) in EUR umgerechnet. US-Ticker (AAPL, MSFT, SPY, QQQ …) sind
-  im Free-Tier am zuverlässigsten; europäische Börsenplätze sind dort nur eingeschränkt abgedeckt.
+- **Aktien/ETFs (US)**: kostenloser API-Key auf [finnhub.io](https://finnhub.io), in der App unter **Profil → Einstellungen** eintragen.
+- **Europäische Wertpapiere, Kurshistorie, Öl**: kostenloser Key auf [twelvedata.com](https://twelvedata.com) (8 Requests/Min im Free-Tier).
+- **Edelmetalle**: gold-api.com, ohne Key. Umrechnung über frankfurter.dev (Fallback open.er-api.com).
 
 ## Daten & Backup
 
 - Alle Daten liegen **ausschliesslich lokal** im Browser-Speicher des Geräts – kein Server, kein Konto.
-- **Geräte-Wechsel/Zweitgerät**: In den Einstellungen „Backup exportieren" (JSON-Datei), auf dem
-  anderen Gerät „Backup importieren". Kein automatischer Sync (dafür wäre später Supabase der Weg).
+- **Geräte-Wechsel/Zweitgerät**: Im Profil „Backup exportieren" (JSON-Datei), auf dem anderen Gerät
+  „Backup importieren". Das Backup enthält alle Einträge, das Steuerprofil und die Einstellungen
+  (API-Keys optional; die App-Sperre bleibt gerätegebunden). Kein automatischer Sync.
+- Kurshistorie liegt in IndexedDB und wird bei Bedarf neu geladen – sie ist nicht Teil des Backups.
 - Achtung: Das Löschen der Browserdaten von Chrome löscht auch die App-Daten → regelmässig exportieren.
 
 ## Lokal entwickeln
@@ -50,5 +51,28 @@ Installierbar als App auf Android (Pixel), iPhone und Desktop. Keine Domain, kei
 ```bash
 npm install
 npm run dev      # Entwicklungsserver
+npm run lint     # ESLint
+npm test         # Vitest (Finanzmathematik, Steuer, Parser, Backup)
 npm run build    # Produktions-Build nach dist/
+npm run check    # alles zusammen – läuft auch in der CI vor jedem Deploy
+```
+
+## Struktur
+
+```
+src/
+  App.jsx              Haupt-Komponente (Tabs, Zustand, Sheets)
+  main.jsx             Einstieg, Service-Worker-Registrierung, Fonts
+  styles.css           Stylesheet (Tokens in .fc-root / .fc-root.dark)
+  lib/                 reine Logik, ohne React
+    finance.js         FIFO, Tilgung, Gruppen, Immobilienwert
+    tax.js             § 32a EStG 2026, Soli, Objektanalyse
+    currency.js        Formatierung, Betrags-Parser
+    api.js             CoinGecko, Finnhub, Twelve Data, FX, Logos
+    storage.js         localStorage, IndexedDB, Backup-Schema
+    auth.js            WebAuthn-App-Sperre
+  components/          UI-Bausteine und Formulare
+  features/            lazy geladene Sheets (Chart, Tilgungsplan, Prognose, Objekt-Check)
+test/                  Vitest
+public/sw.js           Service Worker
 ```

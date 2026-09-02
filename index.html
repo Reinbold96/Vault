@@ -2,19 +2,22 @@
 <html lang="de">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- Zoom bleibt im Browser erlaubt (WCAG 1.4.4); in der installierten App
+         unterbindet main.jsx die Pinch-Gesten für das Native-Gefühl. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https://assets.parqet.com https://logo.clearbit.com; connect-src 'self' https://api.coingecko.com https://finnhub.io https://api.twelvedata.com https://api.gold-api.com https://api.frankfurter.dev https://open.er-api.com; manifest-src 'self'; worker-src 'self'; base-uri 'self'; form-action 'none'; object-src 'none'"
+    />
     <meta name="theme-color" content="#ffffff" />
-    <meta name="description" content="Finanz-Cockpit – Einnahmen, Fixkosten, Kredite und Investments im Blick." />
+    <meta name="description" content="Vault – Einnahmen, Fixkosten, Kredite und Investments im Blick." />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon-192.png" />
     <link rel="apple-touch-icon" href="./icon-192.png" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <title>Vault</title>
   </head>
   <body style="margin:0;background:#ffffff;touch-action:manipulation;-webkit-text-size-adjust:100%;">
     <div id="root"></div>
-        <script type="module" src="/src/main.jsx"></script>
+    <script type="module" src="./src/main.jsx"></script>
   </body>
 </html>
