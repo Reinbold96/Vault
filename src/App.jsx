@@ -3,20 +3,22 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAx
 import {
   Home, LayoutGrid, Receipt, TrendingUp, Download, Upload, Wallet, Landmark, Coins, Banknote,
   Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, Check,
-  Tag, ArrowDownWideNarrow, Layers, RefreshCw, Calculator, User, Percent,
+  Tag, ArrowDownWideNarrow, Layers, RefreshCw, Calculator, User, Percent, Archive, ChevronDown,
 } from "lucide-react";
 import {
   C, SHADOW, MASK, CURRENCIES, VALUE_TYPES, HIST_TYPES, SAVE_CAT, INCOME_TYPES, INCOME_ICONS, ALL_CAT_ICONS,
-  COMMODITIES, CRYPTO_IDS, CAT_COLORS, APP_VERSION, catsOf,
+  COMMODITIES, CRYPTO_IDS, CAT_COLORS, APP_VERSION, catsOf, INTERVALS,
 } from "./lib/constants.jsx";
-import { CAN_HOVER, uid, agoLabel, todayIso, isoDay, addDays, daysBetween } from "./lib/utils.js";
+import { CAN_HOVER, uid, agoLabel, todayIso } from "./lib/utils.js";
 import { getCur, setCurrency, locale, curSym, eur, eurFull, money, fmtQty, fmtDay, roundPrice } from "./lib/currency.js";
 import { fetchFx } from "./lib/api.js";
 import { bioAvailable, bioRegister, bioVerify, sessionUnlocked, markUnlocked, clearUnlocked } from "./lib/auth.js";
 import {
   monthsUntil, applyDueCredits, gkeyOf, fifoAt, cashAmount, cashAtDate, propValueAt,
-  buildGroups, monthly, histKeyOf,
+  buildGroups, histKeyOf, costBreakdown, isImmoCredit, monthlyIn, fxOf,
 } from "./lib/finance.js";
+import { isClosed, perfSummary, tradeStats, holdLabel } from "./lib/performance.js";
+import { contractStatus, contractNote, dueReminders, localTodayIso, statusLabel } from "./lib/contracts.js";
 import { BUNDESLAENDER, blOf } from "./lib/tax.js";
 import {
   DATA_KEY, SETTINGS_KEY, MASKED_KEY, EMPTY, DEFAULT_SETTINGS, loadLS, saveLS, loadHist, saveHist,
@@ -24,7 +26,7 @@ import {
 } from "./lib/storage.js";
 import { DEMO } from "./data/demo.js";
 import {
-  Card, SectionTitle, Empty, Btn, SearchBar, NumInput, Field, YearTag, Sub, Lead, AssetLogo, Sheet, ListItem, CashflowBar,
+  Card, SectionTitle, Empty, Btn, SearchBar, NumInput, Field, Sub, Lead, AssetLogo, Sheet, ListItem, CashflowBar,
 } from "./components/ui.jsx";
 import {
   IncomeForm, ExpenseForm, CreditForm, InvestForm, CatManager, GoalForm, AmountForm, DivForm, CashDetail,
@@ -36,6 +38,18 @@ const PortfolioChart = lazy(() => import("./features/PortfolioChart.jsx"));
 const AmortView = lazy(() => import("./features/AmortView.jsx"));
 const ForecastView = lazy(() => import("./features/ForecastView.jsx"));
 const PropertyCalculator = lazy(() => import("./features/PropertyCalculator.jsx"));
+const TradeCard = lazy(() => import("./features/Performance.jsx").then((m) => ({ default: m.TradeCard })));
+const PerformanceSheet = lazy(() => import("./features/Performance.jsx").then((m) => ({ default: m.PerformanceSheet })));
+
+/* Letzte Wechselkurse merken: offline (oder wenn die Kursdienste hängen) wird damit
+   weitergerechnet statt mit 1:1 – wichtig für Posten in CHF/USD. */
+const FX_KEY = "vault_fx_v1";
+function readFxCache(cur) {
+  try {
+    const c = JSON.parse(localStorage.getItem(FX_KEY) || "null");
+    return c && c.cur === cur && c.rates ? c.rates : null;
+  } catch { return null; }
+}
 const Loading = () => <div className="fc-chart-empty" style={{ height: 120 }}>Wird geladen …</div>;
 
 export default function App() {
@@ -76,7 +90,9 @@ export default function App() {
   const [lockMsg, setLockMsg] = useState("");
   const [undo, setUndo] = useState(null);
   const [search, setSearch] = useState("");
-  const [fxRates, setFxRates] = useState({ EUR: 1, USD: 1, CHF: 1 });
+  const [fxRates, setFxRates] = useState(() => readFxCache(settings.currency) || { EUR: 1, USD: 1, CHF: 1 });
+  const [showClosed, setShowClosed] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const importRef = useRef(null);
 
   /* Wechselkurse für Cash-Konten in Fremdwährung (1 Einheit → Anzeigewährung) */
@@ -85,12 +101,17 @@ export default function App() {
     (async () => {
       const cur = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
       const others = CURRENCIES.filter((c) => c !== cur);
+      const cached = readFxCache(cur) || {};
       const next = { [cur]: 1 };
+      let complete = true;
       for (const c of others) {
         const r = await fetchFx(c, cur);
-        next[c] = r > 0 ? r : 1;
+        if (r > 0) next[c] = r;
+        else { next[c] = cached[c] || 1; complete = false; }
       }
-      if (!dead) setFxRates(next);
+      if (dead) return;
+      setFxRates(next);
+      if (complete) { try { localStorage.setItem(FX_KEY, JSON.stringify({ cur, rates: next, at: Date.now() })); } catch { /* ignore */ } }
     })();
     return () => { dead = true; };
   }, [settings.currency]);
@@ -187,21 +208,24 @@ export default function App() {
   }, []);
 
   /* Abgeleitete Zahlen */
-  const incomeTotal = useMemo(() => data.incomes.reduce((s, i) => s + (Number(i.amount) || 0), 0), [data.incomes]);
-  const fixTotal = useMemo(() => data.expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen").reduce((s, e) => s + monthly(e), 0), [data.expenses]);
-  const varTotal = useMemo(() => data.expenses.filter((e) => e.kind === "variabel").reduce((s, e) => s + monthly(e), 0), [data.expenses]);
-  const savingsTotal = useMemo(() => data.expenses.filter((e) => e.kind === "sparen").reduce((s, e) => s + monthly(e), 0), [data.expenses]);
+  /* Einnahmen und Kosten dürfen eine eigene Währung haben – gerechnet wird in der Anzeigewährung */
+  const incomeTotal = useMemo(() => data.incomes.reduce((s, i) => s + (Number(i.amount) || 0) * fxOf(i.ccy, fxRates), 0), [data.incomes, fxRates]);
+  const mIn = (e) => monthlyIn(e, fxRates);
+  /* Fixkosten enthalten die Raten von Immobilienkrediten (Kategorie Wohnen);
+     unter "Kredite" zählen im Überschuss nur noch die übrigen Kredite. */
+  const costs = useMemo(() => costBreakdown(data.expenses, data.credits, fxRates), [data.expenses, data.credits, fxRates]);
+  const { fixTotal, varTotal, savingsTotal, creditRate, immoRate, otherCreditRate } = costs;
+  const immoCredits = useMemo(() => data.credits.filter(isImmoCredit), [data.credits]);
   const costTotal = fixTotal + varTotal;
   const budgetMode = settings.calcMode === "budget";
-  const creditRate = useMemo(() => data.credits.reduce((s, c) => s + (Number(c.rate) || 0), 0), [data.credits]);
   const creditBalance = useMemo(() => data.credits.reduce((s, c) => s + (Number(c.balance) || 0), 0), [data.credits]);
   const extraTotal = useMemo(
     () => data.credits.reduce((s, c) => s + (c.extras || []).reduce((a, e) => a + (Number(e.amt) || 0), 0), 0),
     [data.credits],
   );
-  const surplus = incomeTotal - costTotal - creditRate;
+  const surplus = incomeTotal - costTotal - otherCreditRate;
   /* Budget-Modus: was nach Fixkosten, Krediten und Sparrate für variable Ausgaben bleibt */
-  const budgetTotal = incomeTotal - fixTotal - creditRate - savingsTotal;
+  const budgetTotal = incomeTotal - fixTotal - otherCreditRate - savingsTotal;
   const budgetFree = budgetTotal - varTotal;
 
   /* Kategorien: eingebaute + eigene, inklusive Umbenennungen */
@@ -217,9 +241,10 @@ export default function App() {
   const catTotals = useMemo(() =>
     allCats.map((c) => ({
       ...c,
-      value: data.expenses.filter((e) => e.category === c.id && e.kind !== "sparen").reduce((s, e) => s + monthly(e), 0),
+      value: data.expenses.filter((e) => e.category === c.id && e.kind !== "sparen").reduce((s, e) => s + monthlyIn(e, fxRates), 0)
+        + (c.id === "wohnen" ? immoRate : 0),
     })).filter((c) => c.value > 0),
-  [data.expenses, allCats]);
+  [data.expenses, allCats, immoRate, fxRates]);
 
   const catSum = useMemo(() => catTotals.reduce((a, c) => a + c.value, 0), [catTotals]);
   /* Auswahl (Tap) hat Vorrang, Hover nur als Vorschau auf Desktop */
@@ -231,20 +256,29 @@ export default function App() {
   /* Sehr lange Betraege werden kleiner gesetzt, damit sie nie an den Innenring stossen */
   const centerValSize = centerVal.length > 13 ? 14 : centerVal.length > 11 ? 15 : 17;
 
-  /* Verträge, deren Kündigung in den nächsten 60 Tagen fällig wird */
-  const dueContracts = useMemo(() => {
-    const today = todayIso();
-    return data.expenses
-      .filter((e) => e.until && e.kind !== "variabel")
-      .map((e) => {
-        const notice = Number(e.notice) || 0;
-        const end = new Date(e.until);
-        const deadline = isoDay(new Date(end.getFullYear(), end.getMonth() - notice, end.getDate()));
-        return { ...e, deadline, days: daysBetween(today, deadline) };
-      })
-      .filter((e) => e.days <= 60)
-      .sort((a, b) => a.days - b.days);
+  /* Verträge: aktueller Stand je Fixkosten-Eintrag (Laufzeit, Verlängerung, Frist)
+     und die Erinnerungen für die Übersicht – nur Einträge mit gesetztem Häkchen. */
+  const contractInfo = useMemo(() => {
+    const today = localTodayIso();
+    const m = {};
+    for (const e of data.expenses) {
+      if (e.kind === "variabel" || e.kind === "sparen") continue;
+      const st = contractStatus(e, today);
+      if (st) m[e.id] = st;
+    }
+    return m;
   }, [data.expenses]);
+  const reminders = useMemo(() => dueReminders(data.expenses, localTodayIso()), [data.expenses]);
+
+  /* Intervall und Originalwährung eines Postens für die Listen */
+  const ivOf = (e) => INTERVALS.find((x) => x.id === e.interval) || INTERVALS[0];
+  const intervalTag = (e) => (ivOf(e).tag ? <span className="fc-tag">{ivOf(e).tag}</span> : null);
+  const amountSub = (e) => {
+    const iv = ivOf(e);
+    const foreign = e.ccy && e.ccy !== CUR;
+    if (iv.months === 1) return foreign ? `${money(e.amount, e.ccy)} monatlich` : "monatlich";
+    return `${foreign ? money(e.amount, e.ccy) : eurFull(e.amount)} / ${iv.per}`;
+  };
 
   /* Positionen zu Gruppen zusammenfassen (mehrere Käufe eines Assets = eine Zeile) */
   const groups = useMemo(
@@ -260,19 +294,17 @@ export default function App() {
     return r.dayPct;
   };
   const portfolioValue = useMemo(() => groups.reduce((s, g) => s + g.value, 0), [groups]);
-  const portfolioCost = useMemo(() => groups.reduce((s, g) => s + g.cost, 0), [groups]);
-  const realizedTotal = useMemo(() => groups.reduce((s, g) => s + g.realized, 0), [groups]);
-  const gain = portfolioValue - portfolioCost + realizedTotal;
   const netWorth = portfolioValue - creditBalance;
   /* Cash in Anzeigewährung – Basis für Sondertilgung aus Cash */
   const cashInCur = useMemo(() => {
     const c = data.investments.find((x) => x.type === "cash" && (x.ccy || CUR) === CUR);
     return c ? cashAmount(c) : 0;
   }, [data.investments, settings.currency]);
-  const divTotal12 = useMemo(() => {
-    const cut = addDays(todayIso(), -365);
-    return (data.divs || []).filter((x) => (x.date || "") >= cut).reduce((s, x) => s + (Number(x.amt) || 0), 0);
-  }, [data.divs]);
+  /* Offene vs. abgeschlossene Positionen – Performance zählt beide */
+  const openGroups = useMemo(() => groups.filter((g) => !isClosed(g)), [groups]);
+  const closedGroups = useMemo(() => groups.filter(isClosed), [groups]);
+  const archived = useMemo(() => new Set(data.archived || []), [data.archived]);
+  const perf = useMemo(() => perfSummary(groups, data.divs || []), [groups, data.divs]);
   const lastPriceUpdate = useMemo(() => {
     const ts = data.investments.map((i) => i.priceUpdated || 0);
     return ts.length ? Math.max(...ts) : 0;
@@ -601,11 +633,31 @@ export default function App() {
     }));
   }
 
+  /* Verkaufte Position ausblenden / wieder einblenden (bleibt in der Performance) */
+  function toggleArchive(gkey) {
+    setData((d) => {
+      const list = d.archived || [];
+      return { ...d, archived: list.includes(gkey) ? list.filter((x) => x !== gkey) : [...list, gkey] };
+    });
+  }
+  /* Zukauf-Formular mit den Stammdaten der Position vorbelegen */
+  const addLotSheet = (g, fromTrade = false) => ({
+    type: "invest",
+    back: g.gkey,
+    backTrade: fromTrade,
+    preset: {
+      type: g.type, symbol: g.ref.symbol || "", name: g.name, logoUrl: g.ref.logoUrl || "",
+      coinId: g.ref.coinId, commodity: g.ref.commodity, unit: g.ref.unit,
+      qty: "", buyPrice: "", buyDate: "", price: g.price ? String(g.price) : "", inChart: g.inChart,
+    },
+  });
+
   /* Ganze Gruppe löschen: alle Käufe und Verkäufe des Assets */
   function removeGroup(gkey) {
     const g = groups.find((x) => x.gkey === gkey);
     withUndo(`${g ? g.name : "Position"} gelöscht`, (d) => ({
       ...d,
+      archived: (d.archived || []).filter((x) => x !== gkey),
       investments: d.investments.filter((x) => gkeyOf(x) !== gkey),
       sells: (d.sells || []).filter((x) => x.gkey !== gkey),
       divs: (d.divs || []).filter((x) => x.gkey !== gkey),
@@ -1027,7 +1079,7 @@ export default function App() {
             <>
               <SectionTitle>Wohin dein Geld fliesst</SectionTitle>
               <Card>
-                <CashflowBar catTotals={catTotals} creditRate={creditRate} surplus={surplus} savings={savingsTotal} budgetFree={budgetFree} budgetMode={budgetMode} />
+                <CashflowBar catTotals={catTotals} creditRate={otherCreditRate} surplus={surplus} savings={savingsTotal} budgetFree={budgetFree} budgetMode={budgetMode} />
               </Card>
             </>
           )}
@@ -1085,22 +1137,25 @@ export default function App() {
             </>
           )}
 
-          {dueContracts.length > 0 && (
+          {reminders.length > 0 && (
             <>
               <SectionTitle>Kündigung fällig</SectionTitle>
               <Card>
-                {dueContracts.slice(0, 4).map((e) => (
+                {reminders.slice(0, 5).map(({ item: e, st }) => (
                   <div className="fc-warnrow" key={e.id}>
-                    <span className="nm">{e.name}</span>
-                    <span className="dt">
-                      {e.days < 0 ? "Frist verstrichen" : e.days === 0 ? "heute" : `in ${e.days} T.`}
+                    <span className="tx">
+                      <span className="nm">{e.name}</span>
+                      <span className="sb">kündigen bis {fmtDay(st.deadline)}</span>
                     </span>
+                    <span className="dt">{statusLabel(st)}</span>
                     <button className="fc-chip" onClick={() => { setTab("expenses"); setCostView("fix"); setSheet({ type: "expense", item: e }); }}>Öffnen</button>
                   </div>
                 ))}
-                <div className="fc-detail-note" style={{ marginTop: 10 }}>
-                  Kündigungsfrist läuft bis {fmtDay(dueContracts[0].deadline)} – Vertragsende {fmtDay(dueContracts[0].until)}.
-                </div>
+                {reminders.length > 5 && (
+                  <div className="fc-detail-note" style={{ marginTop: 10 }}>
+                    + {reminders.length - 5} weitere unter Kosten → Fixkosten
+                  </div>
+                )}
               </Card>
             </>
           )}
@@ -1180,7 +1235,7 @@ export default function App() {
               <SectionTitle>Vermögen</SectionTitle>
               <Card>
                 <div className="fc-item">
-                  <div className="fc-item-main"><div className="fc-item-title">Gesamtvermögen</div><div className="fc-item-sub">{groups.length} Position(en)</div></div>
+                  <div className="fc-item-main"><div className="fc-item-title">Gesamtvermögen</div><div className="fc-item-sub">{openGroups.length} Position(en)</div></div>
                   <div className="fc-item-value">{eurM(portfolioValue)}</div>
                 </div>
                 <div className="fc-item">
@@ -1210,8 +1265,8 @@ export default function App() {
                 <ListItem key={i.id}
                   lead={<Lead icon={INCOME_ICONS[i.type] || Coins} />}
                   title={i.name}
-                  sub={INCOME_TYPES.find((t) => t.id === i.type)?.label}
-                  value={eur(i.amount)}
+                  sub={<Sub parts={[INCOME_TYPES.find((t) => t.id === i.type)?.label, i.ccy && i.ccy !== CUR ? money(i.amount, i.ccy) : null]} />}
+                  value={eur((Number(i.amount) || 0) * fxOf(i.ccy, fxRates))}
                   onEdit={() => setSheet({ type: "income", item: i })}
                   onDelete={() => remove("incomes", i.id)}
                 />
@@ -1237,32 +1292,52 @@ export default function App() {
                 <div className="fc-kpi"><div className="l">Versicherungen</div><div className="v">{eur(catTotals.find((c) => c.id === "versicherung")?.value || 0)}</div></div>
               </div>
               {fixCats.map((cat) => {
-                const items = data.expenses.filter((e) => e.category === cat.id && e.kind !== "variabel" && matches(e.name, cat.label));
-                if (!items.length) return null;
+                const items = data.expenses.filter((e) => e.category === cat.id && e.kind !== "variabel" && e.kind !== "sparen" && matches(e.name, cat.label));
+                /* Raten von Immobilienkrediten: nur Verweis, bearbeitet wird im Kredit */
+                const creditRows = cat.id === "wohnen" ? immoCredits.filter((c) => matches(c.name, cat.label, "Kredit")) : [];
+                if (!items.length && !creditRows.length) return null;
+                const sum = items.reduce((s, e) => s + mIn(e), 0) + creditRows.reduce((s, c) => s + (Number(c.rate) || 0), 0);
                 return (
                   <React.Fragment key={cat.id}>
-                    <SectionTitle right={<span className="fc-sum">{eur(items.reduce((s, e) => s + monthly(e), 0))} / Monat</span>}>{cat.label}</SectionTitle>
+                    <SectionTitle right={<span className="fc-sum">{eur(sum)} / Monat</span>}>{cat.label}</SectionTitle>
                     <Card>
-                      {items.map((e) => (
-                        <ListItem key={e.id}
-                          lead={<Lead icon={ALL_CAT_ICONS[e.category] || Tag} />}
-                          title={e.name}
-                          tag={e.interval === "jaehrlich" ? <YearTag /> : null}
-                          sub={<Sub parts={[
-                            e.interval === "jaehrlich" ? `${eurFull(e.amount)} / Jahr` : "monatlich",
-                            e.until ? `bis ${fmtDay(e.until)}` : null,
-                          ]} />}
-                          note={dueContracts.some((x) => x.id === e.id) ? `Kündigung bis ${fmtDay((dueContracts.find((x) => x.id === e.id) || {}).deadline)}` : null}
-                          value={eur(monthly(e))}
-                          onEdit={() => setSheet({ type: "expense", item: e })}
-                          onDelete={() => remove("expenses", e.id)}
+                      {creditRows.map((c) => (
+                        <ListItem key={`credit_${c.id}`}
+                          link
+                          ariaLabel={`${c.name}: Kredit öffnen`}
+                          lead={<Lead icon={Landmark} />}
+                          title={c.name}
+                          tag={<span className="fc-tag">Kredit</span>}
+                          sub={`Restschuld ${eur(c.balance)}`}
+                          value={eur(c.rate)}
+                          onEdit={() => { setTab("credits"); setSearch(""); setSheet({ type: "creditDetail", id: c.id }); }}
                         />
                       ))}
+                      {items.map((e) => {
+                        const st = contractInfo[e.id];
+                        const note = contractNote(st, fmtDay);
+                        return (
+                          <ListItem key={e.id}
+                            lead={<Lead icon={ALL_CAT_ICONS[e.category] || Tag} />}
+                            title={e.name}
+                            tag={intervalTag(e)}
+                            sub={<Sub parts={[
+                              amountSub(e),
+                              st ? `bis ${fmtDay(st.end)}` : null,
+                            ]} />}
+                            note={note ? note.text : null}
+                            noteTone={note ? note.tone : ""}
+                            value={eur(mIn(e))}
+                            onEdit={() => setSheet({ type: "expense", item: e })}
+                            onDelete={() => remove("expenses", e.id)}
+                          />
+                        );
+                      })}
                     </Card>
                   </React.Fragment>
                 );
               })}
-              {data.expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen").length === 0 && <div style={{ marginTop: 12 }}><Empty text="Erfasse Versicherungen, Miete, Abos und andere Fixkosten – monatlich oder jährlich." action={<Btn small onClick={() => setSheet({ type: "expense", kind: "fix" })}>Fixkosten hinzufügen</Btn>} /></div>}
+              {data.expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen").length === 0 && immoCredits.length === 0 && <div style={{ marginTop: 12 }}><Empty text="Erfasse Versicherungen, Miete, Abos und andere Fixkosten – monatlich oder jährlich." action={<Btn small onClick={() => setSheet({ type: "expense", kind: "fix" })}>Fixkosten hinzufügen</Btn>} /></div>}
               {budgetMode && (
                 <>
                   <SectionTitle right={<span className="fc-sum">{eur(savingsTotal)} / Monat</span>}>{SAVE_CAT.label}</SectionTitle>
@@ -1272,9 +1347,9 @@ export default function App() {
                         <ListItem key={e.id}
                           lead={<Lead icon={PiggyBank} />}
                           title={e.name}
-                          tag={e.interval === "jaehrlich" ? <YearTag /> : null}
-                          sub={e.interval === "jaehrlich" ? `${eurFull(e.amount)} / Jahr` : "monatlich"}
-                          value={eur(monthly(e))}
+                          tag={intervalTag(e)}
+                          sub={amountSub(e)}
+                          value={eur(mIn(e))}
                           onEdit={() => setSheet({ type: "expense", item: e })}
                           onDelete={() => remove("expenses", e.id)}
                         />
@@ -1310,15 +1385,15 @@ export default function App() {
                 if (!items.length) return null;
                 return (
                   <React.Fragment key={cat.id}>
-                    <SectionTitle right={<span className="fc-sum">{eur(items.reduce((s, e) => s + monthly(e), 0))} / Monat</span>}>{cat.label}</SectionTitle>
+                    <SectionTitle right={<span className="fc-sum">{eur(items.reduce((s, e) => s + mIn(e), 0))} / Monat</span>}>{cat.label}</SectionTitle>
                     <Card>
                       {items.map((e) => (
                         <ListItem key={e.id}
                           lead={<Lead icon={ALL_CAT_ICONS[e.category] || Tag} />}
                           title={e.name}
-                          tag={e.interval === "jaehrlich" ? <YearTag /> : null}
-                          sub={e.interval === "jaehrlich" ? `${eurFull(e.amount)} / Jahr` : "monatlich"}
-                          value={eur(monthly(e))}
+                          tag={intervalTag(e)}
+                          sub={amountSub(e)}
+                          value={eur(mIn(e))}
                           onEdit={() => setSheet({ type: "expense", item: e })}
                           onDelete={() => remove("expenses", e.id)}
                         />
@@ -1386,17 +1461,17 @@ export default function App() {
               </div>
               <div className="v">{eurM(portfolioValue)}</div>
             </div>
-            <div className="fc-kpi">
-              <div className="l">Gewinn / Verlust</div>
-              <div className="v" style={{ color: masked ? C.ink : gain >= 0 ? C.positive : C.error }}>{masked ? MASK : `${gain >= 0 ? "+" : ""}${eur(gain)}`}</div>
-              {(realizedTotal !== 0 || divTotal12 > 0) && (
-                <div style={{ fontSize: 12.5, marginTop: 3, color: C.muted }}>
-                  {realizedTotal !== 0 && <>realisiert {masked ? MASK : `${realizedTotal >= 0 ? "+" : ""}${eur(realizedTotal)}`}</>}
-                  {realizedTotal !== 0 && divTotal12 > 0 && " · "}
-                  {divTotal12 > 0 && <>Ausschüttung {eurM(divTotal12)}</>}
+            {/* Performance = offene Kursgewinne + realisierte Gewinne + Ausschüttungen */}
+            <button type="button" className="fc-kpi fc-kpi-btn" onClick={() => setSheet({ type: "perf" })} aria-label="Performance-Bilanz öffnen">
+              <div className="l">Performance <ChevronDown size={13} strokeWidth={2} style={{ transform: "rotate(-90deg)", marginLeft: 2 }} /></div>
+              <div className="v" style={{ color: masked ? C.ink : perf.total >= 0 ? C.positive : C.error }}>{masked ? MASK : `${perf.total >= 0 ? "+" : "−"}${eur(Math.abs(perf.total))}`}</div>
+              {(perf.realized !== 0 || perf.divTotal > 0) && (
+                <div style={{ fontSize: 12.5, marginTop: 3, color: C.muted, lineHeight: 1.3 }}>
+                  offen {masked ? MASK : `${perf.unreal >= 0 ? "+" : "−"}${eur(Math.abs(perf.unreal))}`}
+                  {perf.realized !== 0 && <> · realisiert {masked ? MASK : `${perf.realized >= 0 ? "+" : "−"}${eur(Math.abs(perf.realized))}`}</>}
                 </div>
               )}
-            </div>
+            </button>
           </div>
           {groups.length > 0 && (
             <div style={{ marginTop: 12 }}>
@@ -1423,7 +1498,7 @@ export default function App() {
               </Suspense>
             </div>
           )}
-          {groups.length > 1 && (
+          {openGroups.length > 1 && (
             <div className="fc-invest-tools">
               <SearchBar value={search} onChange={setSearch} placeholder="Suchen" />
               <div className="fc-seg fc-seg-icons" role="tablist">
@@ -1441,7 +1516,7 @@ export default function App() {
           )}
           {groups.length === 0
             ? <Empty text="Erfasse Aktien, ETFs und Krypto – der Ticker reicht, Name und Logo kommen automatisch. Auch Immobilien und Cash-Konten lassen sich als Position anlegen." action={<Btn small onClick={() => setSheet({ type: "invest" })}>Position hinzufügen</Btn>} />
-            : <Card>{[...groups].filter((g) => matches(g.name, g.ref.symbol)).sort((a, b) => {
+            : openGroups.length > 0 && <Card>{[...openGroups].filter((g) => matches(g.name, g.ref.symbol)).sort((a, b) => {
                 if (investSort === "type") {
                   const ord = { aktie: 0, etf: 1, krypto: 2, rohstoff: 3, immobilie: 4, cash: 5 };
                   const d = (ord[a.type] ?? 9) - (ord[b.type] ?? 9);
@@ -1504,6 +1579,65 @@ export default function App() {
                   />
                 );
               })}</Card>}
+
+          {/* ---------- Abgeschlossen: verkaufte Positionen, Performance bleibt erhalten ---------- */}
+          {closedGroups.length > 0 && (() => {
+            const visible = closedGroups
+              .filter((g) => showArchived || !archived.has(g.gkey))
+              .filter((g) => matches(g.name, g.ref.symbol))
+              .map((g) => ({ g, st: tradeStats(g, data.divs || []) }))
+              .sort((a, b) => (b.st.lastSell || "").localeCompare(a.st.lastSell || ""));
+            const hiddenN = closedGroups.filter((g) => archived.has(g.gkey)).length;
+            const realizedClosed = closedGroups.reduce((s2, g) => s2 + (Number(g.realized) || 0), 0);
+            return (
+              <Card>
+                <button type="button" className="fc-closedhead" onClick={() => setShowClosed((v) => !v)} aria-expanded={showClosed}>
+                  <span className="fc-lead"><Archive size={18} strokeWidth={1.75} /></span>
+                  <span className="m">
+                    <span className="t">Abgeschlossen</span>
+                    <span className="s">{closedGroups.length} {closedGroups.length === 1 ? "Position" : "Positionen"}{hiddenN ? ` · ${hiddenN} ausgeblendet` : ""}</span>
+                  </span>
+                  <span className="r">
+                    <span className="v" style={{ color: masked ? C.ink : realizedClosed >= 0 ? C.positive : C.error }}>
+                      {masked ? MASK : `${realizedClosed >= 0 ? "+" : "−"}${eur(Math.abs(realizedClosed))}`}
+                    </span>
+                    <span className="s">realisiert</span>
+                  </span>
+                  <ChevronDown size={17} strokeWidth={2} className={`chev ${showClosed ? "open" : ""}`} />
+                </button>
+                {showClosed && (
+                  <div style={{ marginTop: 6 }}>
+                    {visible.map(({ g, st }) => (
+                      <ListItem key={g.gkey}
+                        lead={g.type === "rohstoff" ? <Lead icon={Gem} /> : <AssetLogo inv={g.ref} enabled={settings.logos !== false} />}
+                        title={g.name}
+                        tag={archived.has(g.gkey) ? <span className="fc-tag">ausgeblendet</span> : null}
+                        sub={<Sub parts={[st.holdDays != null ? holdLabel(st.holdDays) : null, st.lastSell ? `verkauft ${st.lastSell.slice(8, 10)}.${st.lastSell.slice(5, 7)}.${st.lastSell.slice(2, 4)}` : "verkauft"]} />}
+                        value={
+                          <span>
+                            <span style={{ color: masked ? C.ink : g.realized >= 0 ? C.positive : C.error }}>{masked ? MASK : `${g.realized >= 0 ? "+" : "−"}${eur(Math.abs(g.realized))}`}</span><br />
+                            <span className="fc-gain" style={{ color: st.pct == null ? C.mutedSoft : st.pct >= 0 ? C.positive : C.error }}>
+                              {st.pct == null ? "–" : `${st.pct >= 0 ? "+" : "−"}${Math.abs(st.pct).toFixed(1).replace(".", ",")} %`}
+                            </span>
+                          </span>
+                        }
+                        link
+                        ariaLabel={`${g.name}: Details zum Verkauf`}
+                        onEdit={() => setSheet({ type: "trade", gkey: g.gkey })}
+                      />
+                    ))}
+                    {visible.length === 0 && <div className="fc-detail-note" style={{ padding: "8px 0" }}>Alle abgeschlossenen Positionen sind ausgeblendet.</div>}
+                    {hiddenN > 0 && (
+                      <button type="button" className="fc-mini" style={{ padding: "10px 0 2px" }} onClick={() => setShowArchived((v) => !v)}>
+                        {showArchived ? "Ausgeblendete verbergen" : `${hiddenN} ausgeblendete anzeigen`}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </Card>
+            );
+          })()}
+
           <div style={{ margin: "0 16px", display: "flex", gap: 12 }}>
             <Btn onClick={() => setSheet({ type: "invest" })} style={{ flex: 1 }}>+ Position</Btn>
           </div>
@@ -1517,7 +1651,7 @@ export default function App() {
       {/* ---------- Sheets ---------- */}
       {sheet?.type === "income" && (
         <Sheet title={sheet.item ? "Einnahme bearbeiten" : "Neue Einnahme"} onClose={() => setSheet(null)}>
-          <IncomeForm initial={sheet.item} onSave={(f) => save("incomes", f)} />
+          <IncomeForm initial={sheet.item} fxRates={fxRates} onSave={(f) => save("incomes", f)} />
         </Sheet>
       )}
       {sheet?.type === "expense" && (
@@ -1527,6 +1661,7 @@ export default function App() {
             kind={sheet.kind}
             catList={((sheet.item && sheet.item.kind) || sheet.kind) === "variabel" ? varCats : fixCats}
             onAddCat={addCat}
+            fxRates={fxRates}
             onSave={(f) => save("expenses", f)}
           />
         </Sheet>
@@ -1656,7 +1791,7 @@ export default function App() {
       {sheet?.type === "invest" && (
         <Sheet
           title={sheet.item ? "Kauf bearbeiten" : sheet.preset ? `${sheet.preset.name} zukaufen` : "Neue Position"}
-          onClose={() => setSheet(sheet.back ? { type: "group", gkey: sheet.back } : sheet.backCash ? { type: "cash", id: sheet.backCash } : null)}
+          onClose={() => setSheet(sheet.back ? { type: sheet.backTrade ? "trade" : "group", gkey: sheet.back } : sheet.backCash ? { type: "cash", id: sheet.backCash } : null)}
         >
           <InvestForm
             initial={sheet.item || sheet.preset}
@@ -1677,6 +1812,49 @@ export default function App() {
           </Suspense>
         </Sheet>
       )}
+      {sheet?.type === "trade" && (() => {
+        const g = groups.find((x) => x.gkey === sheet.gkey);
+        if (!g) return null;
+        return (
+          <Sheet title={<>{g.name} <span className="fc-tag">abgeschlossen</span></>} onClose={() => setSheet(sheet.back ? { type: sheet.back } : null)}>
+            <Suspense fallback={<Loading />}>
+              <TradeCard
+                group={g}
+                divs={data.divs || []}
+                hist={hist[histKeyOf(g, CUR)]}
+                fxRates={fxRates}
+                archived={archived.has(g.gkey)}
+                masked={masked}
+                onRebuy={() => setSheet(addLotSheet(g, true))}
+                onToggleArchive={() => toggleArchive(g.gkey)}
+                onEdit={() => setSheet({ type: "group", gkey: g.gkey })}
+                onDelete={() => { removeGroup(g.gkey); setSheet(null); }}
+              />
+            </Suspense>
+          </Sheet>
+        );
+      })()}
+      {sheet?.type === "perf" && (
+        <Sheet title="Performance" onClose={() => setSheet(null)}>
+          <Suspense fallback={<Loading />}>
+            <PerformanceSheet
+              groups={groups}
+              divs={data.divs || []}
+              splitting={!!settings.splitting}
+              masked={masked}
+              logos={settings.logos !== false}
+              onOpen={(gkey) => {
+                const g = groups.find((x) => x.gkey === gkey);
+                if (!g) return;
+                if (isClosed(g)) setSheet({ type: "trade", gkey, back: "perf" });
+                else if (g.type === "cash") setSheet({ type: "cash", id: g.ref.id });
+                else if (VALUE_TYPES.includes(g.type)) setSheet({ type: "invest", item: g.ref });
+                else setSheet({ type: "group", gkey });
+              }}
+            />
+          </Suspense>
+        </Sheet>
+      )}
       {sheet?.type === "group" && (() => {
         const g = groups.find((x) => x.gkey === sheet.gkey);
         if (!g) return null;
@@ -1687,15 +1865,7 @@ export default function App() {
               divs={(data.divs || []).filter((x) => x.gkey === g.gkey)}
               onDiv={() => setSheet({ type: "div", gkey: g.gkey })}
               onDeleteDiv={removeDiv}
-              onAddLot={() => setSheet({
-                type: "invest",
-                back: g.gkey,
-                preset: {
-                  type: g.type, symbol: g.ref.symbol || "", name: g.name, logoUrl: g.ref.logoUrl || "",
-                  coinId: g.ref.coinId, commodity: g.ref.commodity, unit: g.ref.unit,
-                  qty: "", buyPrice: "", buyDate: "", price: g.price ? String(g.price) : "", inChart: g.inChart,
-                },
-              })}
+              onAddLot={() => setSheet(addLotSheet(g))}
               onEditLot={(l) => setSheet({ type: "invest", item: l, back: g.gkey })}
               onDeleteLot={(id) => withUndo("Kauf gelöscht", (d) => ({ ...d, investments: d.investments.filter((x) => x.id !== id) }))}
               onSell={() => setSheet({ type: "sell", gkey: g.gkey })}
@@ -1817,8 +1987,8 @@ export default function App() {
             </div>
           </Field>
           <div style={{ fontSize: 12.5, lineHeight: 1.4, color: C.muted, margin: "-6px 0 14px" }}>
-            Bestehende Beträge werden nicht umgerechnet – sie gelten in der gewählten Währung.
-            Live-Kurse (Aktien &amp; Krypto) werden automatisch in die gewählte Währung umgerechnet.
+            Beträge ohne eigene Währung werden nicht umgerechnet – sie gelten in der gewählten Währung.
+            Posten mit eigener Währung (z. B. Lohn oder Krankenkasse in CHF) und Live-Kurse rechnet die App automatisch um.
           </div>
           <Field label="App-Sperre">
             {settings.lockEnabled ? (

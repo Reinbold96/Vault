@@ -41,6 +41,13 @@
 .fc-infolbl{font-size:13px;color:var(--c-mutedSoft);cursor:pointer;}
 .fc-item-right{display:flex;align-items:center;gap:12px;}
 .fc-item-value{font-size:16px;font-weight:600;line-height:1.25;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;}
+.fc-item.link{cursor:pointer;}
+.fc-item-chev{width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;color:var(--c-mutedSoft);flex-shrink:0;}
+.fc-note.muted{color:var(--c-muted);}
+.fc-warnrow .tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px;}
+.fc-warnrow .tx .nm{flex:none;}
+.fc-warnrow .sb{font-size:12.5px;color:var(--c-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fc-warnrow .dt.soft{color:var(--c-muted);}
 .fc-del{width:32px;height:32px;border-radius:9999px;border:none;background:var(--c-strong);color:var(--c-ink);font-size:16px;line-height:1;cursor:pointer;flex-shrink:0;}
 .fc-undo{position:fixed;left:0;right:0;bottom:calc(66px + env(safe-area-inset-bottom));display:flex;justify-content:center;z-index:60;pointer-events:none;}
 .fc-undo.top{top:calc(12px + env(safe-area-inset-top));bottom:auto;}
@@ -226,3 +233,39 @@ html,body{overscroll-behavior-y:contain;}
 .fc-keyrow input{flex:1;min-width:0;}
 .fc-keyrow .fc-eye{width:40px;height:40px;flex-shrink:0;}
 .fc-status{margin:12px 18px 0;padding:10px 12px;border-radius:10px;background:var(--c-soft);font-size:13.5px;line-height:1.4;color:var(--c-body);}
+
+/* ---------- 1.6: Beträge mit Währung, Abgeschlossen, Performance ---------- */
+.fc-amtccy{display:flex;gap:6px;}
+.fc-field .fc-amtccy input{flex:1;min-width:0;}
+.fc-field .fc-amtccy select{flex:0 0 68px;width:68px;padding:14px 6px;text-align:center;}
+.fc-kpi-btn{border:none;text-align:left;font:inherit;color:inherit;cursor:pointer;width:100%;display:block;}
+.fc-kpi-btn:focus-visible{outline:2px solid var(--c-ink);outline-offset:2px;}
+.fc-kpi-btn .l svg{flex-shrink:0;color:var(--c-mutedSoft);}
+.fc-closedhead{display:flex;align-items:center;gap:12px;width:100%;background:none;border:none;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left;}
+.fc-closedhead .m{flex:1;min-width:0;display:flex;flex-direction:column;}
+.fc-closedhead .t{font-size:16px;font-weight:600;color:var(--c-ink);}
+.fc-closedhead .s{font-size:13px;color:var(--c-muted);}
+.fc-closedhead .r{display:flex;flex-direction:column;align-items:flex-end;}
+.fc-closedhead .v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;}
+.fc-closedhead .chev{color:var(--c-mutedSoft);transition:transform .18s;flex-shrink:0;}
+.fc-closedhead .chev.open{transform:rotate(180deg);}
+.fc-kpis3{grid-template-columns:1fr 1fr 1fr;}
+.fc-since{display:flex;align-items:center;gap:12px;border:1px solid var(--c-hairline);border-radius:14px;padding:12px 14px;margin-top:12px;}
+.fc-since .big{font-size:21px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.fc-since .tx{font-size:13px;line-height:1.4;color:var(--c-body);}
+.fc-mini.danger{color:var(--c-error);}
+.fc-perf-total{text-align:center;margin:2px 0 14px;}
+.fc-perf-total .n{font-size:36px;font-weight:700;letter-spacing:-.6px;font-variant-numeric:tabular-nums;}
+.fc-perf-total .l{font-size:13px;color:var(--c-muted);margin-top:2px;}
+.fc-perf-leg{display:flex;flex-direction:column;gap:8px;margin-top:12px;font-size:14px;color:var(--c-body);}
+.fc-perf-leg div{display:flex;align-items:center;gap:8px;}
+.fc-perf-leg i{width:9px;height:9px;border-radius:9999px;display:inline-block;flex-shrink:0;}
+.fc-perf-leg b{margin-left:auto;font-variant-numeric:tabular-nums;}
+.fc-perf-tax{border:1px solid var(--c-hairline);border-radius:14px;padding:12px 14px;margin-top:16px;}
+.fc-perf-tax .top{display:flex;justify-content:space-between;gap:10px;font-size:14px;font-weight:600;color:var(--c-ink);font-variant-numeric:tabular-nums;}
+.fc-perf-tax .fc-goal{padding:0;border:none;}
+.fc-perf-row{display:flex;align-items:center;gap:12px;width:100%;padding:10px 0;background:none;border:none;border-bottom:1px solid var(--c-hairlineSoft);font:inherit;color:inherit;cursor:pointer;text-align:left;}
+.fc-perf-row:last-of-type{border-bottom:none;}
+.fc-perf-row .nm{flex:1;min-width:0;font-size:15px;font-weight:600;color:var(--c-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fc-perf-row b{font-variant-numeric:tabular-nums;font-size:15px;}
+.fc-perf-row .fc-logo,.fc-perf-row .fc-lead{width:34px;height:34px;}

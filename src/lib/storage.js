@@ -2,7 +2,9 @@
    - Daten + Einstellungen: localStorage (klein, synchron)
    - Kurshistorie: IndexedDB (kann mehrere MB werden; localStorage-Quota ~5 MB)
    - Backup: Export/Import mit Schema-Normalisierung und Versions-Migration */
-import { CURRENCIES } from "./constants.jsx";
+import { CURRENCIES, INTERVAL_IDS } from "./constants.jsx";
+import { RENEWAL_IDS } from "./contracts.js";
+import { CREDIT_KIND_IDS } from "./finance.js";
 
 export const DATA_KEY = "finanz_state_v1";
 export const SETTINGS_KEY = "finanz_settings_v1";
@@ -10,7 +12,7 @@ export const MASKED_KEY = "finanz_masked";
 export const HIST_KEY = "vault_hist_v1"; /* alter localStorage-Schlüssel, wird migriert */
 export const BACKUP_VERSION = 4;
 
-export const EMPTY = { incomes: [], expenses: [], credits: [], investments: [], sells: [], divs: [], goals: [], cats: [], catNames: {}, snapshots: [] };
+export const EMPTY = { incomes: [], expenses: [], credits: [], investments: [], sells: [], divs: [], goals: [], cats: [], catNames: {}, snapshots: [], archived: [] };
 
 export const DEFAULT_SETTINGS = {
   finnhubKey: "", tdKey: "", currency: "EUR", theme: "system", calcMode: "surplus",
@@ -91,20 +93,27 @@ const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : null);
 const arr = (v) => (Array.isArray(v) ? v.filter((x) => obj(x)) : []);
 const withId = (x, i) => ({ ...x, id: str(x.id) || `imp_${i}_${Math.random().toString(36).slice(2, 8)}` });
 
+/* Postenwährung nur übernehmen, wenn gültig – sonst gilt die Anzeigewährung */
+const ccyOf = (x) => (CURRENCIES.includes(x.ccy) ? { ccy: x.ccy } : {});
 const flow = (f, i) => withId({ d: str(f.d), amt: num(f.amt), label: f.label == null ? undefined : str(f.label) }, i);
 
 export function normalizeData(raw) {
   const d = obj(raw) || {};
   return {
-    incomes: arr(d.incomes).map((x, i) => withId({ name: str(x.name), type: str(x.type, "sonstiges"), amount: num(x.amount) }, i)),
+    incomes: arr(d.incomes).map((x, i) => withId({ name: str(x.name), type: str(x.type, "sonstiges"), amount: num(x.amount), ...ccyOf(x) }, i)),
     expenses: arr(d.expenses).map((x, i) => withId({
       name: str(x.name), category: str(x.category, "sonstiges"), amount: num(x.amount),
-      interval: x.interval === "jaehrlich" ? "jaehrlich" : "monatlich",
+      interval: INTERVAL_IDS.includes(x.interval) ? x.interval : "monatlich",
+      ...ccyOf(x),
       kind: ["variabel", "sparen"].includes(x.kind) ? x.kind : "fix",
       until: str(x.until), notice: numOrEmpty(x.notice),
+      noticeUnit: ["m", "w", "d"].includes(x.noticeUnit) ? x.noticeUnit : "m",
+      renew: RENEWAL_IDS.includes(Number(x.renew)) ? Number(x.renew) : 0,
+      remind: x.remind === true,
     }, i)),
     credits: arr(d.credits).map((x, i) => withId({
       name: str(x.name), rate: num(x.rate), balance: num(x.balance), interest: num(x.interest),
+      ...(CREDIT_KIND_IDS.includes(x.kind) ? { kind: x.kind } : {}),
       paymentDay: num(x.paymentDay), endDate: str(x.endDate), fixedUntil: str(x.fixedUntil),
       followInterest: numOrEmpty(x.followInterest),
       lastAppliedIdx: typeof x.lastAppliedIdx === "number" ? x.lastAppliedIdx : undefined,
@@ -122,6 +131,7 @@ export function normalizeData(raw) {
     goals: arr(d.goals).map((x, i) => withId({ name: str(x.name), target: num(x.target), saved: num(x.saved), deadline: str(x.deadline) }, i)),
     cats: arr(d.cats).map((x, i) => withId({ label: str(x.label), kind: x.kind === "variabel" ? "variabel" : "fix", color: str(x.color, "#8a5a2b") }, i)),
     catNames: Object.fromEntries(Object.entries(obj(d.catNames) || {}).filter(([, v]) => typeof v === "string")),
+    archived: Array.isArray(d.archived) ? d.archived.filter((x) => typeof x === "string") : [],
     snapshots: arr(d.snapshots).filter((s) => /^\d{4}-\d{2}$/.test(str(s.m))).map((s) => ({ m: s.m, net: num(s.net), pf: num(s.pf), debt: num(s.debt) })),
   };
 }

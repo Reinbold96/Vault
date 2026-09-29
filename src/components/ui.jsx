@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Search, Check, ChevronDown } from "lucide-react";
+import { Search, Check, ChevronDown, ChevronRight } from "lucide-react";
 import { C, SAVE_CAT } from "../lib/constants.jsx";
 import { locale, parseAmount, eur } from "../lib/currency.js";
 import { logoCandidates } from "../lib/api.js";
@@ -177,18 +177,22 @@ export const Collapse = ({ title, icon: Ic, open, onToggle, children }) => (
 
 /* ---------- Listenzeile ----------
    Auf Modulebene, damit React die Zeilen zwischen Renders wiederverwendet.
-   Der Hauptbereich ist ein echter Button: per Tastatur erreichbar. */
-export const ListItem = ({ lead, title, sub, value, valueColor, tag, onEdit, onDelete, note }) => (
-  <div className="fc-item">
+   Der Hauptbereich ist ein echter Button: per Tastatur erreichbar.
+   `link`: Zeile ist nur ein Verweis (z. B. Kreditrate in den Fixkosten) –
+   kein Löschen, stattdessen ein Pfeil; die ganze Zeile ist tippbar. */
+export const ListItem = ({ lead, title, sub, value, valueColor, tag, onEdit, onDelete, note, noteTone, link, ariaLabel }) => (
+  <div className={`fc-item ${link ? "link" : ""}`} onClick={link ? onEdit : undefined}>
     {lead}
-    <button type="button" className="fc-item-main" onClick={onEdit}>
+    <button type="button" className="fc-item-main" onClick={link ? (e) => { e.stopPropagation(); onEdit(); } : onEdit} aria-label={ariaLabel}>
       <div className="fc-item-title">{title}{tag}</div>
       <div className="fc-item-sub">{sub}</div>
-      {note && <div className="fc-note">{note}</div>}
+      {note && <div className={`fc-note ${noteTone || ""}`}>{note}</div>}
     </button>
     <div className="fc-item-right">
       <div className="fc-item-value" style={{ color: valueColor || C.ink }}>{value}</div>
-      {onDelete && <button className="fc-del" onClick={onDelete} aria-label="Löschen">–</button>}
+      {link
+        ? <span className="fc-item-chev" aria-hidden><ChevronRight size={17} strokeWidth={2} /></span>
+        : onDelete && <button className="fc-del" onClick={onDelete} aria-label="Löschen">–</button>}
     </div>
   </div>
 );
