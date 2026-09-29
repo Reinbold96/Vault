@@ -4,6 +4,7 @@ import {
   Home, LayoutGrid, Receipt, TrendingUp, Download, Upload, Wallet, Landmark, Coins, Banknote,
   Sun, Moon, Monitor, Gem, Eye, EyeOff, Fingerprint, Lock, PiggyBank, Check,
   Tag, ArrowDownWideNarrow, Layers, RefreshCw, Calculator, User, Percent, Archive, ChevronDown,
+  CircleCheck, Hourglass, CalendarX, BellRing,
 } from "lucide-react";
 import {
   C, SHADOW, MASK, CURRENCIES, VALUE_TYPES, HIST_TYPES, SAVE_CAT, INCOME_TYPES, INCOME_ICONS, ALL_CAT_ICONS,
@@ -18,7 +19,8 @@ import {
   buildGroups, histKeyOf, costBreakdown, isImmoCredit, monthlyIn, fxOf,
 } from "./lib/finance.js";
 import { isClosed, perfSummary, tradeStats, holdLabel } from "./lib/performance.js";
-import { contractStatus, contractNote, dueReminders, localTodayIso, statusLabel } from "./lib/contracts.js";
+import { isUsMic } from "./lib/identifiers.js";
+import { contractStatus, contractNote, dueReminders, localTodayIso, statusLabel, isOver, cancelStatus, cancelledList, cancelEndFor } from "./lib/contracts.js";
 import { BUNDESLAENDER, blOf } from "./lib/tax.js";
 import {
   DATA_KEY, SETTINGS_KEY, MASKED_KEY, EMPTY, DEFAULT_SETTINGS, loadLS, saveLS, loadHist, saveHist,
@@ -26,7 +28,7 @@ import {
 } from "./lib/storage.js";
 import { DEMO } from "./data/demo.js";
 import {
-  Card, SectionTitle, Empty, Btn, SearchBar, NumInput, Field, Sub, Lead, AssetLogo, Sheet, ListItem, CashflowBar,
+  Card, SectionTitle, Empty, Btn, SearchBar, NumInput, Field, Sub, Lead, AssetLogo, Sheet, ListItem, CashflowBar, Fresh,
 } from "./components/ui.jsx";
 import {
   IncomeForm, ExpenseForm, CreditForm, InvestForm, CatManager, GoalForm, AmountForm, DivForm, CashDetail,
@@ -75,8 +77,20 @@ export default function App() {
   const investSort = ["size", "type", "day"].includes(settings.investSort) ? settings.investSort : "size";
   const setInvestSort = (v) => setSettings((x) => ({ ...x, investSort: v }));
   const [sheet, setSheet] = useState(null);
-  const [priceStatus, setPriceStatus] = useState("");
+  /* Kurze Hinweise unten (statt Statusbalken oben): verschwinden nach wenigen Sekunden */
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  const showToast = (text, ms = 4500) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ text, id: Date.now() });
+    toastTimer.current = setTimeout(() => setToast(null), ms);
+  };
+  /* priceBusy: irgendein Abruf läuft (dezent im Invest-Reiter) · pullBusy: vom Nutzer gezogen (Spinner oben) */
   const [priceBusy, setPriceBusy] = useState(false);
+  const [pullBusy, setPullBusy] = useState(false);
+  /* Letzter Abrufversuch – überlebt ein Neuladen, damit Reflex-Reloads keine Abruf-Serie auslösen */
+  const lastAttempt = useRef((() => { try { return Number(localStorage.getItem("vault_px_try")) || 0; } catch { return 0; } })());
+  const busyRef = useRef(false);
   const [priceFailIds, setPriceFailIds] = useState([]);
   const [activeCat, setActiveCat] = useState(-1);
   const [hoverCat, setHoverCat] = useState(-1);
@@ -102,6 +116,11 @@ export default function App() {
       const cur = CURRENCIES.includes(settings.currency) ? settings.currency : "EUR";
       const others = CURRENCIES.filter((c) => c !== cur);
       const cached = readFxCache(cur) || {};
+      /* Kurse vom letzten Abruf (unter 1 Std.) reichen – beim Neuladen nicht erneut fragen */
+      try {
+        const c = JSON.parse(localStorage.getItem(FX_KEY) || "null");
+        if (c && c.cur === cur && c.at && Date.now() - c.at < 3600000) return;
+      } catch { /* dann eben neu laden */ }
       const next = { [cur]: 1 };
       let complete = true;
       for (const c of others) {
@@ -139,7 +158,7 @@ export default function App() {
   const [hist, setHist] = useState({});
   const [histReady, setHistReady] = useState(false);
   useEffect(() => { let dead = false; loadHist().then((h) => { if (!dead) { setHist(h || {}); setHistReady(true); } }); return () => { dead = true; }; }, []);
-  const updateHist = async (h) => { setHist({ ...h }); const ok = await saveHist(h); if (!ok) setPriceStatus("Kurshistorie konnte nicht gespeichert werden (Speicher voll)"); };
+  const updateHist = async (h) => { setHist({ ...h }); const ok = await saveHist(h); if (!ok) showToast("Kurshistorie konnte nicht gespeichert werden (Speicher voll)"); };
 
   /* Entsperren per Biometrie (Face/Fingerprint), OS fällt selbst auf PIN zurück */
   async function unlock() {
@@ -213,7 +232,10 @@ export default function App() {
   const mIn = (e) => monthlyIn(e, fxRates);
   /* Fixkosten enthalten die Raten von Immobilienkrediten (Kategorie Wohnen);
      unter "Kredite" zählen im Überschuss nur noch die übrigen Kredite. */
-  const costs = useMemo(() => costBreakdown(data.expenses, data.credits, fxRates), [data.expenses, data.credits, fxRates]);
+  /* Gekündigte Verträge zählen bis zu ihrem letzten Tag – danach nicht mehr */
+  const todayKey = localTodayIso();
+  const activeExpenses = useMemo(() => data.expenses.filter((e) => !isOver(e, todayKey)), [data.expenses, todayKey]);
+  const costs = useMemo(() => costBreakdown(activeExpenses, data.credits, fxRates), [activeExpenses, data.credits, fxRates]);
   const { fixTotal, varTotal, savingsTotal, creditRate, immoRate, otherCreditRate } = costs;
   const immoCredits = useMemo(() => data.credits.filter(isImmoCredit), [data.credits]);
   const costTotal = fixTotal + varTotal;
@@ -241,10 +263,10 @@ export default function App() {
   const catTotals = useMemo(() =>
     allCats.map((c) => ({
       ...c,
-      value: data.expenses.filter((e) => e.category === c.id && e.kind !== "sparen").reduce((s, e) => s + monthlyIn(e, fxRates), 0)
+      value: activeExpenses.filter((e) => e.category === c.id && e.kind !== "sparen").reduce((s, e) => s + monthlyIn(e, fxRates), 0)
         + (c.id === "wohnen" ? immoRate : 0),
     })).filter((c) => c.value > 0),
-  [data.expenses, allCats, immoRate, fxRates]);
+  [activeExpenses, allCats, immoRate, fxRates]);
 
   const catSum = useMemo(() => catTotals.reduce((a, c) => a + c.value, 0), [catTotals]);
   /* Auswahl (Tap) hat Vorrang, Hover nur als Vorschau auf Desktop */
@@ -259,16 +281,19 @@ export default function App() {
   /* Verträge: aktueller Stand je Fixkosten-Eintrag (Laufzeit, Verlängerung, Frist)
      und die Erinnerungen für die Übersicht – nur Einträge mit gesetztem Häkchen. */
   const contractInfo = useMemo(() => {
-    const today = localTodayIso();
+    const today = todayKey;
     const m = {};
     for (const e of data.expenses) {
       if (e.kind === "variabel" || e.kind === "sparen") continue;
-      const st = contractStatus(e, today);
+      const st = cancelStatus(e, today) || contractStatus(e, today);
       if (st) m[e.id] = st;
     }
     return m;
-  }, [data.expenses]);
-  const reminders = useMemo(() => dueReminders(data.expenses, localTodayIso()), [data.expenses]);
+  }, [data.expenses, todayKey]);
+  const reminders = useMemo(() => dueReminders(data.expenses, todayKey), [data.expenses, todayKey]);
+  const cancelledRows = useMemo(() => cancelledList(data.expenses, todayKey), [data.expenses, todayKey]);
+  /* Was gekündigte (noch laufende) Verträge ab ihrem Ende monatlich sparen */
+  const cancelSaving = useMemo(() => cancelledRows.filter((x) => x.st.state === "cancelled").reduce((s, x) => s + monthlyIn(x.item, fxRates), 0), [cancelledRows, fxRates]);
 
   /* Intervall und Originalwährung eines Postens für die Listen */
   const ivOf = (e) => INTERVALS.find((x) => x.id === e.interval) || INTERVALS[0];
@@ -437,6 +462,19 @@ export default function App() {
     const item = (data[key] || []).find((x) => x.id === id);
     withUndo(`${item && item.name ? item.name : "Eintrag"} gelöscht`, (d) => ({ ...d, [key]: d[key].filter((x) => x.id !== id) }));
   };
+
+  /* ---------- Verträge: Schnellaktionen auf der Übersicht ---------- */
+  const patchExpense = (id, patch) => (d) => ({ ...d, expenses: d.expenses.map((x) => (x.id === id ? { ...x, ...(typeof patch === "function" ? patch(x) : patch) } : x)) });
+  /* "Gekündigt" direkt aus der Erinnerung: endet zum aktuellen Laufzeitende */
+  function markCancelled(e) {
+    const today = localTodayIso();
+    withUndo(`${e.name} als gekündigt markiert`, patchExpense(e.id, (x) => ({
+      cancelled: true, cancelEnd: cancelEndFor(x, today) || x.until || "", cancelledOn: today,
+      cancelConfirmed: false, endAck: false, remind: false,
+    })));
+  }
+  const confirmCancel = (e) => withUndo(`Bestätigung für ${e.name} vermerkt`, patchExpense(e.id, { cancelConfirmed: true }));
+  const keepEnded = (e) => withUndo(`${e.name} bleibt in der Liste`, patchExpense(e.id, { endAck: true }));
 
   /* ---------- Verkäufe (FIFO) und Cash ---------- */
   /* Erlös landet automatisch auf dem Cash-Konto in der Anzeigewährung */
@@ -640,6 +678,14 @@ export default function App() {
       return { ...d, archived: list.includes(gkey) ? list.filter((x) => x !== gkey) : [...list, gkey] };
     });
   }
+  /* Kennungen einer Position (ISIN/WKN/Börse) – aus dem ersten Kauf, der sie hat */
+  const idsOf = (g) => {
+    const l = (g.lots || []).find((x) => x.isin || x.wkn) || {};
+    const out = {};
+    for (const k of ["idType", "isin", "wkn", "mic", "exchange"]) if (l[k]) out[k] = l[k];
+    if (!out.mic && g.ref.mic) { out.mic = g.ref.mic; out.exchange = g.ref.exchange || ""; }
+    return out;
+  };
   /* Zukauf-Formular mit den Stammdaten der Position vorbelegen */
   const addLotSheet = (g, fromTrade = false) => ({
     type: "invest",
@@ -647,6 +693,7 @@ export default function App() {
     backTrade: fromTrade,
     preset: {
       type: g.type, symbol: g.ref.symbol || "", name: g.name, logoUrl: g.ref.logoUrl || "",
+      ...idsOf(g),
       coinId: g.ref.coinId, commodity: g.ref.commodity, unit: g.ref.unit,
       qty: "", buyPrice: "", buyDate: "", price: g.price ? String(g.price) : "", inChart: g.inChart,
     },
@@ -714,7 +761,7 @@ export default function App() {
     const onEnd = () => {
       const fire = pullRef.current.dist >= THRESHOLD;
       reset();
-      if (fire && !priceBusy) refreshPrices();
+      if (fire && !priceBusy) refreshPrices({ manual: true });
     };
     window.addEventListener("touchstart", onStart, { passive: true });
     window.addEventListener("touchmove", onMove, { passive: false });
@@ -729,10 +776,28 @@ export default function App() {
   }, [sheet, locked, priceBusy, data.investments]);
 
   /* ---------- Live-Kurse: CoinGecko (Krypto) + Finnhub (Aktien/ETF) ---------- */
-  async function refreshPrices() {
+  /* manual: vom Nutzer ausgelöst (Ziehen). Automatische Abrufe laufen still im Hintergrund.
+     Die angezeigten Kurse bleiben stehen, bis neue da sind – sie werden nur ausgetauscht. */
+  const PULL_COOLDOWN = 60000;      /* Ziehen innerhalb 1 Min. nach dem letzten Abruf: kein neuer API-Call */
+  const AUTO_MIN_AGE = 5 * 60000;   /* App-Start: nur abrufen, wenn der letzte Stand älter als 5 Min. ist */
+  async function refreshPrices({ manual = false } = {}) {
     const priceable = data.investments.filter((i) => !VALUE_TYPES.includes(i.type));
-    if (!priceable.length) return;
+    /* Ref statt State: Effekte mit alter Closure sollen keinen zweiten Abruf starten */
+    if (!priceable.length || busyRef.current) return;
+    const now0 = Date.now();
+    const fresh = Math.max(lastPriceUpdate || 0, lastAttempt.current);
+    if (!manual && now0 - lastAttempt.current < AUTO_MIN_AGE) return;
+    if (manual && now0 - fresh < PULL_COOLDOWN) {
+      /* Reflex-Ziehen: kurz Rückmeldung geben, aber die Kursdienste nicht erneut fragen */
+      setPullBusy(true);
+      setTimeout(() => setPullBusy(false), 450);
+      return;
+    }
+    lastAttempt.current = now0;
+    try { localStorage.setItem("vault_px_try", String(now0)); } catch { /* egal */ }
+    busyRef.current = true;
     setPriceBusy(true);
+    if (manual) setPullBusy(true);
     const notes = [];
     const failed = [];
     const updated = {};   // symbol → price
@@ -796,6 +861,8 @@ export default function App() {
           let keyInvalid = false;
           for (const s of stocks) {
             const sym = (s.symbol || "").toUpperCase();
+            /* Europäische Notierung (per ISIN/WKN gewählt) → nicht bei Finnhub raten */
+            if (!isUsMic(s.mic)) { tdRetry.push(s); continue; }
             try {
               const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${settings.finnhubKey}`);
               if (res.status === 401 || res.status === 403) { keyInvalid = true; break; }
@@ -845,7 +912,8 @@ export default function App() {
         for (const s of tdRetry) {
           const sym = (s.symbol || "").trim();
           try {
-            const q = await fetch(`https://api.twelvedata.com/quote?symbol=${encodeURIComponent(sym)}&apikey=${settings.tdKey}`).then((r) => r.json());
+            const mic = s.mic ? `&mic_code=${encodeURIComponent(s.mic)}` : "";
+            const q = await fetch(`https://api.twelvedata.com/quote?symbol=${encodeURIComponent(sym)}${mic}&apikey=${settings.tdKey}`).then((r) => r.json());
             const px = q && q.close != null ? Number(q.close) : null;
             if (px && q.currency) {
               const r = await fxTo(q.currency);
@@ -906,15 +974,31 @@ export default function App() {
       const sym = (i.symbol || "").toUpperCase();
       return updatedById[i.id] == null && updated[sym] == null;
     }).map((i) => i.id);
-    setPriceFailIds(failIds);
-    setTimeout(() => setPriceFailIds([]), 12000);
     const n = Object.keys(updated).length + Object.keys(updatedById).length;
-    const parts = [];
-    if (n) parts.push(`${n} von ${priceable.length} Kursen aktualisiert`);
-    if (failed.length) parts.push(`Fehlgeschlagen: ${[...new Set(failed)].join(", ")}`);
-    parts.push(...notes);
-    if (parts.length) { setPriceStatus(parts.join(" · ")); setTimeout(() => setPriceStatus(""), 10000); }
+    /* Ergebnis: Erfolg braucht keine Meldung – die neuen Werte blenden sich ein.
+       Probleme gibt es einmal am Ende als kurzen Hinweis, ohne Dienstnamen. */
+    if (manual) {
+      setPriceFailIds(failIds);
+      setTimeout(() => setPriceFailIds([]), 12000);
+    }
+    const names = [...new Set(priceable.filter((i) => failIds.includes(i.id)).map((i) => (i.symbol || i.name || "").toUpperCase()))].filter(Boolean);
+    const busy = notes.some((x) => /Limit/i.test(x));
+    const keyHint = notes.find((x) => /Key/i.test(x));
+    const since = lastPriceUpdate ? agoLabel(lastPriceUpdate).replace(/\.$/, "") : "";
+    let msg = "";
+    if (!n && failIds.length) {
+      msg = busy
+        ? "Kursdienste gerade ausgelastet – in einer Minute erneut ziehen."
+        : `Kurse konnten gerade nicht aktualisiert werden${since ? ` – angezeigt wird der Stand von ${since}` : ""}.`;
+    } else if (failIds.length) {
+      msg = `${names.length === 1 ? `${names[0]} wurde` : `${names.length} Kurse wurden`} nicht aktualisiert${names.length > 1 && names.length <= 3 ? ` (${names.join(", ")})` : ""} – dort gilt der letzte Stand.`;
+    }
+    if (manual && keyHint && !busy) msg = msg ? `${msg} ${keyHint}.` : `${keyHint}.`;
+    /* Automatisch: nur melden, wenn gar nichts ging (z. B. offline) */
+    if (msg && (manual || !n)) showToast(msg);
+    busyRef.current = false;
     setPriceBusy(false);
+    setPullBusy(false);
   }
 
   /* Beim App-Start einmal automatisch aktualisieren */
@@ -922,7 +1006,8 @@ export default function App() {
   useEffect(() => {
     if (didAutoRefresh.current) return;
     didAutoRefresh.current = true;
-    if (data.investments.some((i) => !VALUE_TYPES.includes(i.type))) {
+    const recent = lastPriceUpdate && Date.now() - lastPriceUpdate < AUTO_MIN_AGE;
+    if (!recent && data.investments.some((i) => !VALUE_TYPES.includes(i.type))) {
       const t = setTimeout(() => refreshPrices(), 800);
       return () => clearTimeout(t);
     }
@@ -944,7 +1029,7 @@ export default function App() {
 
   function importData(file) {
     const reader = new FileReader();
-    const flash = (msg) => { setPriceStatus(msg); setTimeout(() => setPriceStatus(""), 8000); };
+    const flash = (msg) => showToast(msg, 6000);
     reader.onload = () => {
       try {
         /* Erst vollständig validieren – dann in den State. Ein kaputtes Backup
@@ -971,15 +1056,15 @@ export default function App() {
   return (
     <div className={`fc-root ${dark ? "dark" : ""}`}>
 
-      {(pullPx > 0 || priceBusy) && (
+      {(pullPx > 0 || pullBusy) && (
         <div
           className="fc-pull"
           style={{
-            opacity: priceBusy ? 1 : Math.min(1, pullPx / 40),
-            transform: `translateY(${priceBusy ? 14 : Math.max(4, pullPx - 12)}px)`,
+            opacity: pullBusy ? 1 : Math.min(1, pullPx / 40),
+            transform: `translateY(${pullBusy ? 14 : Math.max(4, pullPx - 12)}px)`,
           }}
         >
-          <RefreshCw size={16} strokeWidth={2} className={priceBusy ? "spin" : ""} />
+          <RefreshCw size={16} strokeWidth={2} className={pullBusy ? "spin" : ""} />
         </div>
       )}
 
@@ -1020,9 +1105,9 @@ export default function App() {
         </div>
       </div>
 
-      {(priceStatus || saveErr) && (
-        <div className="fc-status" role="status">
-          {saveErr ? "Speichern fehlgeschlagen – Browser-Speicher voll? Bitte Backup exportieren." : priceStatus}
+      {saveErr && (
+        <div className="fc-status" role="alert">
+          Speichern fehlgeschlagen – Browser-Speicher voll? Bitte Backup exportieren.
         </div>
       )}
 
@@ -1041,7 +1126,7 @@ export default function App() {
           {!isEmpty && (
             <div className="fc-hero">
               <div className="num" style={{ color: netWorth >= 0 ? C.ink : C.error }}>
-                {eurM(netWorth)}
+                <Fresh v={Math.round(netWorth)}>{eurM(netWorth)}</Fresh>
               </div>
               <div className="lbl">
                 Nettovermögen
@@ -1072,7 +1157,7 @@ export default function App() {
               </div>
               <div className="v" style={{ color: (budgetMode ? savingsTotal : surplus) >= 0 ? C.positive : C.error }}>{eur(budgetMode ? savingsTotal : surplus)}</div>
             </div>
-            <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v">{eurM(portfolioValue)}</div></div>
+            <div className="fc-kpi"><div className="l">Portfoliowert</div><div className="v"><Fresh v={Math.round(portfolioValue)}>{eurM(portfolioValue)}</Fresh></div></div>
           </div>
 
           {incomeTotal > 0 && (
@@ -1137,28 +1222,57 @@ export default function App() {
             </>
           )}
 
-          {reminders.length > 0 && (
-            <>
-              <SectionTitle>Kündigung fällig</SectionTitle>
-              <Card>
-                {reminders.slice(0, 5).map(({ item: e, st }) => (
-                  <div className="fc-warnrow" key={e.id}>
-                    <span className="tx">
-                      <span className="nm">{e.name}</span>
-                      <span className="sb">kündigen bis {fmtDay(st.deadline)}</span>
-                    </span>
-                    <span className="dt">{statusLabel(st)}</span>
-                    <button className="fc-chip" onClick={() => { setTab("expenses"); setCostView("fix"); setSheet({ type: "expense", item: e }); }}>Öffnen</button>
-                  </div>
-                ))}
-                {reminders.length > 5 && (
-                  <div className="fc-detail-note" style={{ marginTop: 10 }}>
-                    + {reminders.length - 5} weitere unter Kosten → Fixkosten
-                  </div>
-                )}
-              </Card>
-            </>
-          )}
+          {(reminders.length > 0 || cancelledRows.length > 0) && (() => {
+            /* Verträge: zuerst fällige Kündigungen, dann abgelaufene, dann gekündigte */
+            const openExp = (e) => { setTab("expenses"); setCostView("fix"); setSheet({ type: "expense", item: e }); };
+            const rows = [
+              ...reminders.map((r) => ({ ...r, kind: "due" })),
+              ...cancelledRows.filter((r) => r.st.state === "over").map((r) => ({ ...r, kind: "over" })),
+              ...cancelledRows.filter((r) => r.st.state !== "over").map((r) => ({ ...r, kind: "cancelled" })),
+            ];
+            const shown = rows.slice(0, 6);
+            /* Kurzes Datum: im laufenden Jahr ohne Jahreszahl */
+            const short = (iso) => { const [y, m, d] = String(iso || "").split("-"); return y ? `${d}.${m}.${y === todayKey.slice(0, 4) ? "" : y.slice(2)}` : ""; };
+            return (
+              <>
+                <SectionTitle right={cancelSaving > 0 ? <span className="fc-sum">spart {eur(cancelSaving)} / Monat</span> : null}>Verträge</SectionTitle>
+                <Card>
+                  {shown.map(({ item: e, st, kind }) => (
+                    <div className={`fc-cxrow ${kind}`} key={e.id}>
+                      <span className="ic" aria-hidden="true">
+                        {kind === "due" ? <BellRing size={16} strokeWidth={2.2} />
+                          : kind === "over" ? <CalendarX size={16} strokeWidth={2.2} />
+                            : st.confirmed ? <CircleCheck size={16} strokeWidth={2.2} /> : <Hourglass size={16} strokeWidth={2.2} />}
+                      </span>
+                      <button type="button" className="tx" onClick={() => openExp(e)} aria-label={`${e.name} öffnen`}>
+                        <span className="nm">{e.name}{kind !== "due" && <span className={`fc-tag ${kind === "over" ? "" : "ok"}`}>{kind === "over" ? "Beendet" : "Gekündigt"}</span>}</span>
+                        <span className="sb">
+                          {kind === "due" ? `kündigen bis ${short(st.deadline)}`
+                            : kind === "over" ? `seit ${short(st.end)} · zählt nicht mehr`
+                              : `${st.end ? `endet ${short(st.end)}` : "Enddatum fehlt"}${st.confirmed ? " · bestätigt" : " · Bestätigung fehlt"}`}
+                        </span>
+                      </button>
+                      {kind === "due" && <span className="dt">{statusLabel(st)}</span>}
+                      {kind === "cancelled" && st.confirmed && <span className="dt soft">{statusLabel(st)}</span>}
+                      {kind === "due" && <button className="fc-chip" onClick={() => markCancelled(e)} aria-label={`${e.name} als gekündigt markieren`}><Check size={12} strokeWidth={3} />Gekündigt</button>}
+                      {kind === "cancelled" && !st.confirmed && <button className="fc-chip" onClick={() => confirmCancel(e)} aria-label={`Bestätigung für ${e.name} erhalten`}><Check size={12} strokeWidth={3} />Bestätigt</button>}
+                      {kind === "over" && (
+                        <span className="acts">
+                          <button className="fc-chip" onClick={() => remove("expenses", e.id)}>Entfernen</button>
+                          <button className="fc-chip ghost" onClick={() => keepEnded(e)}>Behalten</button>
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                  {rows.length > shown.length && (
+                    <div className="fc-detail-note" style={{ marginTop: 10 }}>
+                      + {rows.length - shown.length} weitere unter Kosten → Fixkosten
+                    </div>
+                  )}
+                </Card>
+              </>
+            );
+          })()}
 
           {snapshots.length > 1 && (
             <>
@@ -1296,7 +1410,7 @@ export default function App() {
                 /* Raten von Immobilienkrediten: nur Verweis, bearbeitet wird im Kredit */
                 const creditRows = cat.id === "wohnen" ? immoCredits.filter((c) => matches(c.name, cat.label, "Kredit")) : [];
                 if (!items.length && !creditRows.length) return null;
-                const sum = items.reduce((s, e) => s + mIn(e), 0) + creditRows.reduce((s, c) => s + (Number(c.rate) || 0), 0);
+                const sum = items.filter((e) => !isOver(e, todayKey)).reduce((s, e) => s + mIn(e), 0) + creditRows.reduce((s, c) => s + (Number(c.rate) || 0), 0);
                 return (
                   <React.Fragment key={cat.id}>
                     <SectionTitle right={<span className="fc-sum">{eur(sum)} / Monat</span>}>{cat.label}</SectionTitle>
@@ -1316,18 +1430,19 @@ export default function App() {
                       {items.map((e) => {
                         const st = contractInfo[e.id];
                         const note = contractNote(st, fmtDay);
+                        const over = !!st && st.cancelled && st.state === "over";
                         return (
                           <ListItem key={e.id}
                             lead={<Lead icon={ALL_CAT_ICONS[e.category] || Tag} />}
                             title={e.name}
-                            tag={intervalTag(e)}
+                            tag={<>{intervalTag(e)}{st && st.cancelled && <span className={`fc-tag ${over ? "" : "ok"}`}>{over ? "Beendet" : "Gekündigt"}</span>}</>}
                             sub={<Sub parts={[
                               amountSub(e),
-                              st ? `bis ${fmtDay(st.end)}` : null,
+                              st && !st.cancelled ? `bis ${fmtDay(st.end)}` : null,
                             ]} />}
                             note={note ? note.text : null}
                             noteTone={note ? note.tone : ""}
-                            value={eur(mIn(e))}
+                            value={over ? <span className="fc-strike">{eur(mIn(e))}</span> : eur(mIn(e))}
                             onEdit={() => setSheet({ type: "expense", item: e })}
                             onDelete={() => remove("expenses", e.id)}
                           />
@@ -1459,7 +1574,7 @@ export default function App() {
                   {masked ? <EyeOff size={14} strokeWidth={1.9} /> : <Eye size={14} strokeWidth={1.9} />}
                 </button>
               </div>
-              <div className="v">{eurM(portfolioValue)}</div>
+              <div className="v"><Fresh v={Math.round(portfolioValue)}>{eurM(portfolioValue)}</Fresh></div>
             </div>
             {/* Performance = offene Kursgewinne + realisierte Gewinne + Ausschüttungen */}
             <button type="button" className="fc-kpi fc-kpi-btn" onClick={() => setSheet({ type: "perf" })} aria-label="Performance-Bilanz öffnen">
@@ -1475,7 +1590,7 @@ export default function App() {
           </div>
           {groups.length > 0 && (
             <div style={{ marginTop: 12 }}>
-              <Suspense fallback={<Card><div className="fc-chart-empty" style={{ height: 236 }}>Chart wird geladen …</div></Card>}>
+              <Suspense fallback={<Card><div className="fc-chart-skel" style={{ height: 320 }} aria-label="Chart wird vorbereitet" /></Card>}>
               <PortfolioChart
                 groups={groups}
                 hist={hist}
@@ -1561,7 +1676,7 @@ export default function App() {
                     sub={<Sub parts={subParts} />}
                     value={
                       <span>
-                        {eurM(g.value)}<br />
+                        <Fresh v={Math.round(g.value * 100)}>{eurM(g.value)}</Fresh><br />
                         {investSort === "day" ? (
                           <span className="fc-gain" style={{ color: dayPctOf(g) == null ? C.mutedSoft : dayPctOf(g) >= 0 ? C.positive : C.error }}>
                             {dayPctOf(g) == null ? "–" : `${dayPctOf(g) >= 0 ? "+" : ""}${dayPctOf(g).toFixed(1).replace(".", ",")} % Tag`}
@@ -1642,7 +1757,9 @@ export default function App() {
             <Btn onClick={() => setSheet({ type: "invest" })} style={{ flex: 1 }}>+ Position</Btn>
           </div>
           <div className="fc-hint">
-            Zum Aktualisieren der Kurse die Seite nach unten ziehen{lastPriceUpdate > 0 ? ` – zuletzt ${agoLabel(lastPriceUpdate)}` : ""}.
+            {priceBusy
+              ? <span className="sync"><RefreshCw size={12} strokeWidth={2.2} /> Kurse werden aktualisiert …</span>
+              : <>Zum Aktualisieren der Kurse die Seite nach unten ziehen{lastPriceUpdate > 0 ? ` – Stand ${agoLabel(lastPriceUpdate).replace(/\.$/, "")}` : ""}.</>}
             Krypto und Edelmetalle laufen ohne Key, Aktien und ETFs über die API-Keys in den Einstellungen.
           </div>
         </>
@@ -2035,7 +2152,7 @@ export default function App() {
             </div>
           </Field>
           <div style={{ fontSize: 12.5, lineHeight: 1.4, color: C.muted, margin: "-6px 0 14px" }}>
-            Finnhub (kostenlos auf finnhub.io) liefert US-Aktien und -ETFs, Twelve Data (twelvedata.com) europäische Wertpapiere und Öl – dort funktioniert als Ticker auch die ISIN.
+            Finnhub (kostenlos auf finnhub.io) liefert US-Aktien und -ETFs, Twelve Data (twelvedata.com) europäische Wertpapiere und Öl. Aktien und ETFs lassen sich auch per ISIN oder WKN anlegen – die App sucht den passenden Ticker dazu.
             Krypto und Edelmetalle laufen ohne Key.
           </div>
           <button type="button" className="fc-check" onClick={() => setSettings({ ...settings, logos: settings.logos === false })}>
@@ -2088,6 +2205,11 @@ export default function App() {
             <span className="txt">{undo.label}</span>
             <button onClick={doUndo}>Rückgängig</button>
           </div>
+        </div>
+      )}
+      {toast && (
+        <div key={toast.id} className={`fc-toast ${sheet ? "top" : undo ? "lift" : ""}`} role="status" aria-live="polite" onClick={() => setToast(null)}>
+          <div className="fc-toast-inner">{toast.text}</div>
         </div>
       )}
 

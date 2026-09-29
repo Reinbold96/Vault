@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.7.0 – 2026-09-29
+
+### Aktien und ETFs per ISIN oder WKN
+- Im Formular für Aktien und ETFs gibt es neben **Ticker** jetzt **ISIN** und **WKN**. Die App sucht das Wertpapier (onvista, Twelve Data – beides ohne API-Key), füllt Name und Typ aus und zeigt die Handelsplätze zur Auswahl („Kurse über ASST · NASDAQ · USD“).
+- Gerechnet wird weiter mit dem Ticker; ISIN, WKN und Börse werden mitgespeichert und in der Positions-Ansicht angezeigt. Eine ISIN im Ticker-Feld wird automatisch erkannt.
+- Tippfehler fallen sofort auf (ISIN-Prüfziffer, WKN ohne I/O). Wird nichts gefunden, bleibt die Kennung gespeichert und der Ticker lässt sich von Hand eintragen.
+- Kurse: Bei gewählter europäischer Notierung fragt die App nicht mehr Finnhub (US), sondern Twelve Data mit dem passenden Handelsplatz.
+
+### Gekündigte Verträge
+- Fixkosten haben einen Status **Läuft / Gekündigt**. Bei „Gekündigt“: gekündigt am, Vertrag endet am (Vorschlag aus Laufzeit und Frist) und **Kündigungsbestätigung erhalten**.
+- Übersicht → **Verträge**: fällige Kündigungen, gekündigte Verträge (mit Restlaufzeit, „Bestätigung fehlt“) und beendete Verträge, klar unterschieden. Oben rechts steht, wie viel die gekündigten Verträge monatlich sparen.
+- Schnellaktionen direkt auf der Übersicht: **Gekündigt** (aus der Erinnerung), **Bestätigt**, nach Ablauf **Entfernen** oder **Behalten** – jeweils mit Rückgängig.
+- Nach dem letzten Vertragstag zählt ein gekündigter Vertrag nicht mehr zu Fixkosten, Ring und Überschuss; in der Liste steht er durchgestrichen als „Beendet“.
+- Der bisherige Link „Gekündigt – endet am …“ ist durch den Status ersetzt.
+
+### Ruhigeres Aktualisieren der Kurse
+- Kein Statusbalken mehr oben. Während eines Abrufs bleiben die bisherigen Kurse stehen; neue Werte blenden sich sanft ein.
+- **Weniger Abrufe:** Beim Öffnen/Neuladen wird nur abgerufen, wenn der letzte Stand älter als 5 Minuten ist. Herunterziehen innerhalb einer Minute nach dem letzten Abruf fragt die Kursdienste nicht erneut (kurzer Spinner als Rückmeldung). Wechselkurse werden höchstens stündlich geholt.
+- Automatische Abrufe laufen still im Hintergrund – im Invest-Reiter steht dezent „Kurse werden aktualisiert …“. Der Spinner oben erscheint nur beim Herunterziehen.
+- Probleme kommen einmal am Ende als kurzer Hinweis unten (ca. 4 Sek., antippen schliesst), ohne Dienstnamen – z. B. „Kurse konnten gerade nicht aktualisiert werden – angezeigt wird der Stand von vor 2 Std.“ Automatische Abrufe melden sich nur, wenn gar nichts ging.
+- **Portfolio-Chart:** zeichnet sofort aus dem Zwischenspeicher (auch vom Vortag) und lädt fehlende Kursverläufe im Hintergrund nach (kleines Sync-Symbol). Kein „Kursverlauf wird geladen …“ mehr beim Tab-Wechsel; Netzfehler bei vorhandenen Daten bleiben still.
+
+### Portfolio-Chart
+- Die grauen Verkaufsmarker und der Hinweis darunter sind wieder entfernt. Verkaufte Positionen zählen weiter in Kurve und Performance.
+
 ## 1.6.0 – 2026-09-29
 
 ### Immobilienkredit in den Fixkosten

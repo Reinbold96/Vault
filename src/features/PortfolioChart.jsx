@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, ReferenceDot } from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from "recharts";
+import { RefreshCw } from "lucide-react";
 import { C, SHADOW, MASK, BENCHMARKS, HIST_TYPES, CRYPTO_MAX_DAYS, CRYPTO_IDS, RANGES } from "../lib/constants.jsx";
 import { locale, curSym, eur, eurFull } from "../lib/currency.js";
 import { todayIso, addDays, daysBetween, eachDay, yearStartIso } from "../lib/utils.js";
 import { fifoAt, cashAmount, cashAtDate, propValueAt, histKeyOf } from "../lib/finance.js";
 import { fetchStockHistories, fetchCryptoHistory, fetchFxSeries, fillForward } from "../lib/api.js";
-import { Card } from "../components/ui.jsx";
+import { Card, Fresh } from "../components/ui.jsx";
+
+/* Letzte berechnete Kurve – überlebt Tab-Wechsel, damit der Chart nicht neu "lädt" */
+const chartCache = { key: "", state: null };
 
 export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBenchmark, range: rangeProp, mode: modeProp, onRange, onMode, masked = false, hist: histProp, histReady = true, onHist }) {
   /* Zeitraum und Darstellung liegen in den Settings, damit die Wahl einen App-Neustart ueberlebt */
@@ -15,7 +19,6 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
   const setMode = onMode;
   const [hover, setHover] = useState(null);
   const chartBox = useRef(null);
-  const [state, setState] = useState({ loading: false, rows: [], notes: [], err: "" });
 
   /* Gruppen mit Kurshistorie, Kaufdatum und Chart-Häkchen */
   const eligible = useMemo(() => groups.filter((g) =>
@@ -31,13 +34,19 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
   const propKey = propGroups.map((g) => `${g.gkey}|${g.ref.buyDate}|${g.ref.valMode || "value"}|${g.ref.growth || 0}|${g.ref.price}|${g.ref.buyPrice}`).join(",");
   const bmKey = benchmarks.join(",");
 
+  /* Stale-while-revalidate: erst sofort aus dem Tages-Cache (auch von gestern) zeichnen,
+     dann im Hintergrund fehlende Serien holen und die Kurve still austauschen.
+     Der Chart verschwindet dabei nie hinter "wird geladen". */
+  const cacheKey = [eligKey, cashKey, propKey, bmKey, cur].join("§");
+  const [state, setState] = useState(() => (chartCache.key === cacheKey && chartCache.state) || { loading: true, rows: [], notes: [], err: "" });
+  const [refreshing, setRefreshing] = useState(false);
+  const publish = (next) => { chartCache.key = cacheKey; chartCache.state = next; setState(next); };
+
   useEffect(() => {
     let cancelled = false;
     async function build() {
-      if (!eligible.length && !cashGroups.length && !propGroups.length) { setState({ loading: false, rows: [], notes: [], err: "" }); return; }
+      if (!eligible.length && !cashGroups.length && !propGroups.length) { publish({ loading: false, rows: [], notes: [], err: "" }); return; }
       if (!histReady) return; /* IndexedDB noch nicht gelesen – Effekt läuft danach erneut */
-      setState((s) => ({ ...s, loading: true, err: "" }));
-      const notes = [];
       const hist = { ...(histProp || {}) };
       let histChanged = false;
       const today = todayIso();
@@ -49,163 +58,199 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
       const startAll = earliest < addDays(today, -3650) ? addDays(today, -3650) : earliest;
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-      /* --- benötigte Serien laden (Tages-Cache) --- */
+      /* --- benötigte Serien --- */
       const need = [];
       for (const g of eligible) {
         if (g.type === "krypto") need.push({ key: histKeyOf(g, cur), kind: "crypto", g });
         else need.push({ key: histKeyOf(g, cur), kind: "stock", sym: (g.ref.symbol || "").toUpperCase() });
       }
       for (const b of activeBms) need.push({ key: `td:${b.sym}`, kind: "stock", sym: b.sym, bm: b });
-
       const uniq = [];
       const seen = new Set();
       for (const n of need) { if (!seen.has(n.key)) { seen.add(n.key); uniq.push(n); } }
+      const hasSeries = (key) => !!(hist[key] && hist[key].series);
 
+      /* Wechselkurse: was gebraucht wird, und was davon im Cache liegt */
+      const fxNeed = () => {
+        const set = new Set();
+        for (const n of uniq) { const h = hist[n.key]; if (h && h.ccy && h.ccy !== cur) set.add(h.ccy); }
+        for (const g of cashGroups) { const c = g.ref.ccy || cur; if (c !== cur) set.add(c); }
+        return [...set];
+      };
+      const cachedFx = () => {
+        const out = {};
+        for (const ccy of fxNeed()) { const h = hist[`fx:${ccy}:${cur}`]; if (h && h.series) out[ccy] = h.series; }
+        return out;
+      };
+
+      /* --- Kurve aus Serien + Wechselkursen berechnen --- */
+      const compute = (fx) => {
+        const dates = eachDay(startAll, today);
+        const filled = {};
+        for (const n of uniq) {
+          const h = hist[n.key];
+          if (h && h.series) filled[n.key] = fillForward(h.series, dates);
+        }
+        const fxFilled = {};
+        for (const [ccy, s] of Object.entries(fx)) fxFilled[ccy] = fillForward(s, dates);
+
+        /* Zeitgewichtete Rendite über die Wertpapiere: Zu- und Verkäufe verzerren die
+           Kurve nicht, dadurch ist der Vergleich mit den Indizes fair. Cash zählt nur im Wert. */
+        const chartLots = new Map();
+        for (const g of eligible) chartLots.set(g.gkey, g.lots.filter((l) => l.inChart !== false && l.buyDate));
+        const rows = [];
+        const flatNames = new Set();
+        let twr = 100, prev = null;
+        for (const d of dates) {
+          let assets = 0, invested = 0, any = false;
+          const px = {};
+          for (const g of eligible) {
+            const pos = fifoAt(chartLots.get(g.gkey) || [], g.sells, d);
+            if (pos.openQty <= 1e-10) continue;
+            const key = histKeyOf(g, cur);
+            const ser = filled[key];
+            const raw = ser && ser[d];
+            const h = hist[key];
+            /* Ohne Wechselkurs-Historie (noch nicht geladen): heutiger Kurs als Näherung */
+            const rate = raw != null && h && h.ccy && h.ccy !== cur ? ((fxFilled[h.ccy] && fxFilled[h.ccy][d]) ?? (fxRates && fxRates[h.ccy])) : 1;
+            let p;
+            if (raw != null && rate != null) {
+              p = raw * rate;
+              px[g.gkey] = { p, qty: pos.openQty }; /* zaehlt in der Renditekette */
+            } else {
+              /* Keine Kurshistorie (z. B. ohne Twelve-Data-Key): Position mit ihrem
+                 aktuellen Kurs als konstanten Wert mitzaehlen, statt sie stillschweigend
+                 aus dem Chart fallen zu lassen. In die %-Kurve geht sie nicht ein. */
+              if (!(g.price > 0)) continue;
+              p = g.price;
+              flatNames.add(g.name || g.ref.symbol);
+            }
+            assets += pos.openQty * p;
+            invested += pos.openCost;
+            any = true;
+          }
+          /* Cash: heutiger Stand minus alle späteren Zuflüsse, in Anzeigewährung */
+          let cash = 0;
+          for (const g of cashGroups) {
+            const ccy = g.ref.ccy || cur;
+            const r = ccy === cur ? 1 : ((fxFilled[ccy] && fxFilled[ccy][d]) ?? (fxRates && fxRates[ccy]) ?? 1);
+            cash += cashAtDate(g.ref, d) * r;
+          }
+          /* Immobilien: eigener Wertverlauf, ohne Kursquelle. Sie gehen als Pseudo-Position
+             in die Renditekette ein, damit die %-Kurve ihr Wachstum ebenfalls zeigt. */
+          let props = 0;
+          for (const g of propGroups) {
+            if (g.ref.buyDate && g.ref.buyDate > d) continue;
+            const pv = propValueAt(g.ref, d);
+            if (!(pv > 0)) continue;
+            props += pv;
+            px["prop:" + g.gkey] = { p: pv, qty: 1 };
+          }
+          if (!any && cash === 0 && props === 0) continue;
+          if (prev) {
+            let num = 0, den = 0;
+            for (const k of Object.keys(prev.px)) {
+              const a = prev.px[k], b = px[k];
+              if (!a || !b) continue;
+              num += a.qty * b.p;
+              den += a.qty * a.p;
+            }
+            if (den > 0) twr *= num / den;
+          }
+          const row = { d, value: assets + cash + props, assets, cash, props, invested, gain: assets - invested, twr };
+          for (const b of activeBms) {
+            const ser = filled[`td:${b.sym}`];
+            row["bm_" + b.id] = ser && ser[d] != null ? ser[d] : null;
+          }
+          rows.push(row);
+          prev = { d, px };
+        }
+
+        return { rows, flatNames };
+      };
+      const finish = (res, notes, stillLoading) => {
+        const all = [...notes];
+        if (res.flatNames.size) all.push(`Ohne Kurshistorie, mit heutigem Kurs gezählt: ${[...res.flatNames].join(", ")}`);
+        publish({ loading: false, rows: res.rows, notes: [...new Set(all)], err: res.rows.length || stillLoading ? "" : "Keine Kursdaten für den Zeitraum gefunden" });
+      };
+
+      /* Dauerhafte Hinweise (Konfiguration) – unabhängig vom Netz */
+      const staticNotes = [];
+      for (const n of uniq) {
+        if (n.kind === "crypto" && !(n.g.ref.coinId || CRYPTO_IDS[(n.g.ref.symbol || "").toUpperCase()]) && !hasSeries(n.key)) staticNotes.push(`${n.g.name}: keine Krypto-ID`);
+      }
+      const staleOf = () => uniq.filter((n) => { const c = hist[n.key]; return !(c && c.fetched === today && c.series); });
+      const stale = staleOf();
+      const staleStocks = stale.filter((x) => x.kind === "stock");
+      if (staleStocks.length && !tdKey && staleStocks.some((x) => !hasSeries(x.key))) staticNotes.push("Für Kurshistorie von Aktien/ETFs den Twelve-Data-Key in den Einstellungen eintragen");
+      const fxStale = fxNeed().filter((ccy) => { const h = hist[`fx:${ccy}:${cur}`]; return !(h && h.fetched === today); });
+      const willFetch = stale.some((x) => x.kind === "crypto") || (staleStocks.length > 0 && !!tdKey) || fxStale.length > 0;
+
+      /* Phase 1: sofort mit dem, was da ist */
+      finish(compute(cachedFx()), staticNotes, willFetch);
+      if (!willFetch) { setRefreshing(false); return; }
+      setRefreshing(true);
+
+      /* Phase 2: im Hintergrund nachladen. Netzfehler nur melden, wenn es gar keine
+         (auch keine ältere) Serie gibt – sonst gilt still der letzte Stand. */
+      const notes = [...staticNotes];
       let planBlocked = [], limitHit = false;
-      const stale = uniq.filter((n) => { const c = hist[n.key]; return !(c && c.fetched === today && c.series); });
-      /* Krypto: CoinGecko, ein Request je Coin */
       for (const n of stale.filter((x) => x.kind === "crypto")) {
+        const coinId = n.g.ref.coinId || CRYPTO_IDS[(n.g.ref.symbol || "").toUpperCase()];
+        if (!coinId) continue;
         try {
-          const coinId = n.g.ref.coinId || CRYPTO_IDS[(n.g.ref.symbol || "").toUpperCase()];
-          if (!coinId) { notes.push(`${n.g.name}: keine Krypto-ID`); continue; }
           const days = Math.min(CRYPTO_MAX_DAYS, Math.max(2, daysBetween(startAll, today) + 1));
           const r = await fetchCryptoHistory(coinId, cur, days);
           hist[n.key] = { fetched: today, ccy: r.ccy, series: r.series };
           histChanged = true;
           await sleep(400);
         } catch {
-          notes.push(`${n.g.name}: keine Historie`);
+          if (!hasSeries(n.key)) notes.push(`${n.g.name}: keine Historie`);
         }
+        if (cancelled) return;
       }
       /* Aktien/ETFs/Benchmarks: Twelve Data – ALLE Symbole in einem Request
          (Gratis-Tarif: 8 Requests/Min – so reicht einer statt zwölf) */
-      const stocks = stale.filter((x) => x.kind === "stock");
-      if (stocks.length && !tdKey) notes.push("Für Kurshistorie von Aktien/ETFs den Twelve-Data-Key in den Einstellungen eintragen");
-      if (stocks.length && tdKey) {
-        const syms = [...new Set(stocks.map((x) => x.sym))];
+      if (staleStocks.length && tdKey) {
+        const syms = [...new Set(staleStocks.map((x) => x.sym))];
         for (let i = 0; i < syms.length; i += 8) {
           const chunk = syms.slice(i, i + 8);
           try {
             const res = await fetchStockHistories(chunk, tdKey, startAll);
             for (const sym of chunk) {
               const r = res[sym];
-              if (!r) { notes.push(`${sym}: keine Historie`); continue; }
-              if (r.error === "PLAN") { planBlocked.push(sym); continue; }
-              if (r.error) { notes.push(`${sym}: keine Historie`); continue; }
+              if (r && r.error === "PLAN") { planBlocked.push(sym); continue; }
+              if (!r || r.error) { if (!hasSeries(`td:${sym}`)) notes.push(`${sym}: keine Historie`); continue; }
               hist[`td:${sym}`] = { fetched: today, ccy: r.ccy, series: r.series };
               histChanged = true;
             }
           } catch (e) {
             if (String(e.message) === "LIMIT") { limitHit = true; break; }
             if (String(e.message) === "PLAN") planBlocked.push(...chunk);
-            else notes.push(`${chunk.join(", ")}: keine Historie`);
+            else for (const sym of chunk) if (!hasSeries(`td:${sym}`)) notes.push(`${sym}: keine Historie`);
           }
+          if (cancelled) return;
           if (i + 8 < syms.length) await sleep(900);
         }
       }
       if (planBlocked.length) notes.push(`Nicht im Gratis-Tarif: ${[...new Set(planBlocked)].join(", ")}`);
-      if (limitHit) notes.push("Datenlimit erreicht – in 1 Minute erneut öffnen");
+      if (limitHit && staleStocks.some((x) => !hasSeries(x.key))) notes.push("Datenlimit erreicht – später erneut öffnen");
       if (cancelled) return;
 
       /* --- Wechselkurse für Fremdwährungen (Kurse und Cash-Konten) --- */
-      const needFx = new Set();
-      for (const n of uniq) { const h = hist[n.key]; if (h && h.ccy && h.ccy !== cur) needFx.add(h.ccy); }
-      for (const g of cashGroups) { const c = g.ref.ccy || cur; if (c !== cur) needFx.add(c); }
-      const fx = {};
-      for (const ccy of needFx) {
+      const fx = cachedFx();
+      for (const ccy of fxNeed()) {
         const fxKey = `fx:${ccy}:${cur}`;
-        if (hist[fxKey] && hist[fxKey].fetched === today) { fx[ccy] = hist[fxKey].series; continue; }
+        if (hist[fxKey] && hist[fxKey].fetched === today) continue;
         try {
-          const s = await fetchFxSeries(ccy, cur, startAll);
-          if (s) { fx[ccy] = s; hist[fxKey] = { fetched: today, series: s }; histChanged = true; }
-        } catch { notes.push(`Wechselkurs ${ccy}→${cur} nicht verfügbar`); }
+          const s2 = await fetchFxSeries(ccy, cur, startAll);
+          if (s2) { fx[ccy] = s2; hist[fxKey] = { fetched: today, series: s2 }; histChanged = true; }
+        } catch { if (!fx[ccy]) notes.push(`Wechselkurs ${ccy}→${cur} nicht verfügbar`); }
       }
-      if (histChanged && onHist) onHist(hist);
       if (cancelled) return;
-
-      /* --- Zeitachse & Serien zusammensetzen --- */
-      const dates = eachDay(startAll, today);
-      const filled = {};
-      for (const n of uniq) {
-        const h = hist[n.key];
-        if (h && h.series) filled[n.key] = fillForward(h.series, dates);
-      }
-      const fxFilled = {};
-      for (const [ccy, s] of Object.entries(fx)) fxFilled[ccy] = fillForward(s, dates);
-
-      /* Zeitgewichtete Rendite über die Wertpapiere: Zu- und Verkäufe verzerren die
-         Kurve nicht, dadurch ist der Vergleich mit den Indizes fair. Cash zählt nur im Wert. */
-      const chartLots = new Map();
-      for (const g of eligible) chartLots.set(g.gkey, g.lots.filter((l) => l.inChart !== false && l.buyDate));
-      const rows = [];
-      const flatNames = new Set();
-      let twr = 100, prev = null;
-      for (const d of dates) {
-        let assets = 0, invested = 0, any = false;
-        const px = {};
-        for (const g of eligible) {
-          const pos = fifoAt(chartLots.get(g.gkey) || [], g.sells, d);
-          if (pos.openQty <= 1e-10) continue;
-          const key = histKeyOf(g, cur);
-          const ser = filled[key];
-          const raw = ser && ser[d];
-          const h = hist[key];
-          const rate = raw != null && h && h.ccy && h.ccy !== cur ? (fxFilled[h.ccy] && fxFilled[h.ccy][d]) : 1;
-          let p;
-          if (raw != null && rate != null) {
-            p = raw * rate;
-            px[g.gkey] = { p, qty: pos.openQty }; /* zaehlt in der Renditekette */
-          } else {
-            /* Keine Kurshistorie (z. B. ohne Twelve-Data-Key): Position mit ihrem
-               aktuellen Kurs als konstanten Wert mitzaehlen, statt sie stillschweigend
-               aus dem Chart fallen zu lassen. In die %-Kurve geht sie nicht ein. */
-            if (!(g.price > 0)) continue;
-            p = g.price;
-            flatNames.add(g.name || g.ref.symbol);
-          }
-          assets += pos.openQty * p;
-          invested += pos.openCost;
-          any = true;
-        }
-        /* Cash: heutiger Stand minus alle späteren Zuflüsse, in Anzeigewährung */
-        let cash = 0;
-        for (const g of cashGroups) {
-          const ccy = g.ref.ccy || cur;
-          const r = ccy === cur ? 1 : ((fxFilled[ccy] && fxFilled[ccy][d]) ?? (fxRates && fxRates[ccy]) ?? 1);
-          cash += cashAtDate(g.ref, d) * r;
-        }
-        /* Immobilien: eigener Wertverlauf, ohne Kursquelle. Sie gehen als Pseudo-Position
-           in die Renditekette ein, damit die %-Kurve ihr Wachstum ebenfalls zeigt. */
-        let props = 0;
-        for (const g of propGroups) {
-          if (g.ref.buyDate && g.ref.buyDate > d) continue;
-          const pv = propValueAt(g.ref, d);
-          if (!(pv > 0)) continue;
-          props += pv;
-          px["prop:" + g.gkey] = { p: pv, qty: 1 };
-        }
-        if (!any && cash === 0 && props === 0) continue;
-        if (prev) {
-          let num = 0, den = 0;
-          for (const k of Object.keys(prev.px)) {
-            const a = prev.px[k], b = px[k];
-            if (!a || !b) continue;
-            num += a.qty * b.p;
-            den += a.qty * a.p;
-          }
-          if (den > 0) twr *= num / den;
-        }
-        const row = { d, value: assets + cash + props, assets, cash, props, invested, gain: assets - invested, twr };
-        for (const b of activeBms) {
-          const ser = filled[`td:${b.sym}`];
-          row["bm_" + b.id] = ser && ser[d] != null ? ser[d] : null;
-        }
-        rows.push(row);
-        prev = { d, px };
-      }
-
-      if (flatNames.size) notes.push(`Ohne Kurshistorie, mit heutigem Kurs gezählt: ${[...flatNames].join(", ")}`);
-      setState({ loading: false, rows, notes: [...new Set(notes)], err: rows.length ? "" : "Keine Kursdaten für den Zeitraum gefunden" });
+      if (histChanged && onHist) onHist(hist);
+      finish(compute(fx), notes, false);
+      setRefreshing(false);
     }
     build();
     return () => { cancelled = true; };
@@ -263,25 +308,6 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
   const chg = view.first && view.last ? (view.last.gain - view.first.gain) + realizedWin + propChg : 0;
   const chgPct = view.first && view.last && view.first.twr ? (view.last.twr / view.first.twr - 1) * 100 : 0;
   const hoverRow = hover != null && view.rows[hover] ? view.rows[hover] : null;
-  /* Verkäufe als Marker auf der Linie: auch nach dem Verkauf bleibt ihr Beitrag in der Kurve */
-  const sellMarks = useMemo(() => {
-    if (view.rows.length < 2) return [];
-    const first = view.rows[0].d, last = view.rows[view.rows.length - 1].d;
-    const byDay = new Map();
-    for (const g of eligible) {
-      for (const s of g.sells || []) {
-        if (!s.date || s.date < first || s.date > last) continue;
-        const row = view.rows.find((r) => r.d >= s.date);
-        if (!row) continue;
-        const y = showPerf ? row.perf : row.value;
-        if (y == null) continue;
-        const name = (g.ref.symbol || g.name || "").toUpperCase();
-        const prev = byDay.get(row.d);
-        byDay.set(row.d, { d: row.d, y, name: prev && prev.name !== name ? `${prev.name}+` : name });
-      }
-    }
-    return [...byDay.values()].slice(-8);
-  }, [view.rows, eligible, showPerf]);
   const fmtDate = (d) => { const x = new Date(d); return `${String(x.getDate()).padStart(2, "0")}.${String(x.getMonth() + 1).padStart(2, "0")}.${String(x.getFullYear()).slice(2)}`; };
   /* Achsenbeschriftung so genau, dass keine zwei Ticks gleich aussehen:
      die Genauigkeit richtet sich nach der Spannweite der Werte im Zeitraum. */
@@ -313,7 +339,7 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
       <div className="fc-chart-head">
         {/* Wert und Veränderung teilen eine Zeile - spart eine Zeile Höhe */}
         <div className="fc-chart-val">
-          <span className={`val ${masked ? "mask" : ""}`}>{masked ? MASK : hoverRow ? eur(hoverRow.value) : view.last ? eur(view.last.value) : "–"}</span>
+          <span className={`val ${masked ? "mask" : ""}`}>{masked ? MASK : hoverRow ? eur(hoverRow.value) : <Fresh v={view.last ? Math.round(view.last.value) : 0}>{view.last ? eur(view.last.value) : "–"}</Fresh>}</span>
           {hoverRow ? (
             <span className="chg" style={{ color: C.muted }}>
               {fmtDate(hoverRow.d)}
@@ -324,6 +350,7 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
               {!masked && <>{chg >= 0 ? "+" : ""}{eur(chg)} · </>}{chgPct >= 0 ? "+" : ""}{chgPct.toFixed(1).replace(".", ",")} %
             </span>
           ) : null}
+          {refreshing && <span className="fc-chart-sync" title="Kursverlauf wird im Hintergrund aktualisiert" aria-label="Kursverlauf wird aktualisiert"><RefreshCw size={11} strokeWidth={2.2} /></span>}
         </div>
         <div className="fc-chart-modes">
           <button className={!showPerf ? "active" : ""} onClick={() => setMode("value")} title={`Wert in ${cur}`} aria-label={`Wert in ${cur}`}>{curSym()}</button>
@@ -338,8 +365,8 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
       </div>
 
       <div ref={chartBox} style={{ width: "100%", height: 236, marginTop: 8 }}>
-        {state.loading ? (
-          <div className="fc-chart-empty">Kursverlauf wird geladen …</div>
+        {state.loading && view.rows.length < 2 ? (
+          <div className="fc-chart-skel" aria-label="Kursverlauf wird vorbereitet" />
         ) : view.rows.length < 2 ? (
           <div className="fc-chart-empty">{state.err || "Noch keine Daten – Kaufdatum bei den Positionen eintragen."}</div>
         ) : (
@@ -370,10 +397,6 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
               {showPerf && activeBms.map((b) => (
                 <Line key={b.id} type="monotone" dataKey={"bm_" + b.id} name={b.label} stroke={b.color} strokeWidth={1.7} dot={false} connectNulls strokeDasharray="4 3" />
               ))}
-              {sellMarks.map((m) => (
-                <ReferenceDot key={m.d} x={m.d} y={m.y} r={4.5} fill={C.canvas} stroke={C.ink} strokeWidth={1.8}
-                  label={{ value: `${m.name} ▼`, position: "top", fontSize: 10, fill: C.muted }} />
-              ))}
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -389,10 +412,6 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
           );
         })}
       </div>
-
-      {sellMarks.length > 0 && (
-        <div className="fc-chart-note">○ Verkauf – die Rendite bis zum Verkauf bleibt in der Kurve enthalten.</div>
-      )}
 
       {!showPerf && activeBms.length > 0 && (
         <div className="fc-chart-note">Vergleichsindizes werden in der %-Ansicht angezeigt.</div>
