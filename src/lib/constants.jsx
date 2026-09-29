@@ -2,6 +2,7 @@ import {
   Shield, Home, Car, Repeat, ShoppingCart, MoreHorizontal,
   Wallet, Baby, HeartHandshake, Coins, Heart, Stethoscope, Users,
   Sofa, Sparkles, Fuel, ShoppingBag, Plane, Gamepad2, Utensils, Shirt, GraduationCap, PiggyBank,
+  Zap, Smartphone, ScrollText,
 } from "lucide-react";
 
 /* ---------- Airbnb Design Tokens (aus DESIGN-airbnb.md) ---------- */
@@ -30,8 +31,11 @@ export const SHADOW = "rgba(0,0,0,0.02) 0 0 0 1px, rgba(0,0,0,0.04) 0 2px 6px 0,
 export const EXPENSE_CATS = [
   { id: "versicherung", label: "Versicherung", color: C.luxe },
   { id: "wohnen", label: "Wohnen", color: C.plus },
+  { id: "energie", label: "Energie", color: "#c17d3a" },
+  { id: "kommunikation", label: "Kommunikation", color: "#5b8fb0" },
   { id: "mobilitaet", label: "Mobilität", color: C.rausch },
   { id: "abos", label: "Abos & Verträge", color: C.muted },
+  { id: "steuern", label: "Steuern & Abgaben", color: "#7a6ff0" },
   { id: "leben", label: "Lebenshaltung", color: C.mutedSoft },
   { id: "spende", label: "Spende", color: "#8a5a2b" },
   { id: "gesundheit", label: "Gesundheit", color: "#4a7d6d" },
@@ -45,6 +49,15 @@ export const INCOME_TYPES = [
   { id: "elterngeld", label: "Elterngeld" },
   { id: "sonstiges", label: "Sonstiges" },
 ];
+
+/* Zahlungsintervalle: Betrag gilt für so viele Monate */
+export const INTERVALS = [
+  { id: "monatlich", label: "monatlich", months: 1, per: "Monat", tag: "" },
+  { id: "quartalsweise", label: "quartalsweise", months: 3, per: "Quartal", tag: "Quartal" },
+  { id: "halbjaehrlich", label: "halbjährlich", months: 6, per: "Halbjahr", tag: "Halbjährl." },
+  { id: "jaehrlich", label: "jährlich", months: 12, per: "Jahr", tag: "Jährlich" },
+];
+export const INTERVAL_IDS = INTERVALS.map((i) => i.id);
 
 export const CREDIT_KINDS = [
   { id: "immo", label: "Immobilienkredit" },
@@ -75,6 +88,9 @@ export const COMMODITIES = [
 export const CAT_ICONS = {
   versicherung: Shield,
   wohnen: Home,
+  energie: Zap,
+  kommunikation: Smartphone,
+  steuern: ScrollText,
   mobilitaet: Car,
   abos: Repeat,
   leben: ShoppingCart,

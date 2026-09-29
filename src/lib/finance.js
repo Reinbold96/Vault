@@ -224,8 +224,16 @@ export function buildGroups(investments, sells, fx) {
   return out;
 }
 
-export const monthly = (item) =>
-  item.interval === "jaehrlich" ? (Number(item.amount) || 0) / 12 : Number(item.amount) || 0;
+/* Monatsbetrag in der Währung des Postens (quartalsweise ÷ 3, halbjährlich ÷ 6, jährlich ÷ 12) */
+const INTERVAL_MONTHS = { monatlich: 1, quartalsweise: 3, halbjaehrlich: 6, jaehrlich: 12 };
+export const intervalMonths = (interval) => INTERVAL_MONTHS[interval] || 1;
+export const monthly = (item) => (Number(item.amount) || 0) / intervalMonths(item.interval);
+
+/* Umrechnungsfaktor einer Postenwährung in die Anzeigewährung.
+   fx[ccy] = Wert von 1 ccy in Anzeigewährung (wie bei den Cash-Konten). */
+export const fxOf = (ccy, fx = {}) => (!ccy || ccy === getCur() ? 1 : Number(fx[ccy]) || 1);
+/* Monatsbetrag in der Anzeigewährung */
+export const monthlyIn = (item, fx) => monthly(item) * fxOf(item.ccy, fx);
 
 /* ---------- Kreditart ----------
    Alte Kredite ohne `kind` werden am Namen erkannt ("Immobilienkredit",
@@ -241,11 +249,12 @@ export const isImmoCredit = (c) => creditKindOf(c) === "immo";
 /* ---------- Monatliche Kosten-Aufteilung ----------
    Die Rate eines Immobilienkredits zählt zu den Fixkosten (Kategorie Wohnen)
    und deshalb NICHT noch einmal unter "Kredite" – der Überschuss bleibt gleich. */
-export function costBreakdown(expenses = [], credits = []) {
+export function costBreakdown(expenses = [], credits = [], fx = {}) {
   const sum = (list, fn) => list.reduce((s, x) => s + fn(x), 0);
-  const fixExpenses = sum(expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen"), monthly);
-  const varTotal = sum(expenses.filter((e) => e.kind === "variabel"), monthly);
-  const savingsTotal = sum(expenses.filter((e) => e.kind === "sparen"), monthly);
+  const m = (e) => monthlyIn(e, fx);
+  const fixExpenses = sum(expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen"), m);
+  const varTotal = sum(expenses.filter((e) => e.kind === "variabel"), m);
+  const savingsTotal = sum(expenses.filter((e) => e.kind === "sparen"), m);
   const rateOf = (c) => Number(c.rate) || 0;
   const creditRate = sum(credits, rateOf);
   const immoRate = sum(credits.filter(isImmoCredit), rateOf);
