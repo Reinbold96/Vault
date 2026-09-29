@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, ReferenceDot } from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from "recharts";
 import { C, SHADOW, MASK, BENCHMARKS, HIST_TYPES, CRYPTO_MAX_DAYS, CRYPTO_IDS, RANGES } from "../lib/constants.jsx";
 import { locale, curSym, eur, eurFull } from "../lib/currency.js";
 import { todayIso, addDays, daysBetween, eachDay, yearStartIso } from "../lib/utils.js";
@@ -263,25 +263,6 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
   const chg = view.first && view.last ? (view.last.gain - view.first.gain) + realizedWin + propChg : 0;
   const chgPct = view.first && view.last && view.first.twr ? (view.last.twr / view.first.twr - 1) * 100 : 0;
   const hoverRow = hover != null && view.rows[hover] ? view.rows[hover] : null;
-  /* Verkäufe als Marker auf der Linie: auch nach dem Verkauf bleibt ihr Beitrag in der Kurve */
-  const sellMarks = useMemo(() => {
-    if (view.rows.length < 2) return [];
-    const first = view.rows[0].d, last = view.rows[view.rows.length - 1].d;
-    const byDay = new Map();
-    for (const g of eligible) {
-      for (const s of g.sells || []) {
-        if (!s.date || s.date < first || s.date > last) continue;
-        const row = view.rows.find((r) => r.d >= s.date);
-        if (!row) continue;
-        const y = showPerf ? row.perf : row.value;
-        if (y == null) continue;
-        const name = (g.ref.symbol || g.name || "").toUpperCase();
-        const prev = byDay.get(row.d);
-        byDay.set(row.d, { d: row.d, y, name: prev && prev.name !== name ? `${prev.name}+` : name });
-      }
-    }
-    return [...byDay.values()].slice(-8);
-  }, [view.rows, eligible, showPerf]);
   const fmtDate = (d) => { const x = new Date(d); return `${String(x.getDate()).padStart(2, "0")}.${String(x.getMonth() + 1).padStart(2, "0")}.${String(x.getFullYear()).slice(2)}`; };
   /* Achsenbeschriftung so genau, dass keine zwei Ticks gleich aussehen:
      die Genauigkeit richtet sich nach der Spannweite der Werte im Zeitraum. */
@@ -370,10 +351,6 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
               {showPerf && activeBms.map((b) => (
                 <Line key={b.id} type="monotone" dataKey={"bm_" + b.id} name={b.label} stroke={b.color} strokeWidth={1.7} dot={false} connectNulls strokeDasharray="4 3" />
               ))}
-              {sellMarks.map((m) => (
-                <ReferenceDot key={m.d} x={m.d} y={m.y} r={4.5} fill={C.canvas} stroke={C.ink} strokeWidth={1.8}
-                  label={{ value: `${m.name} ▼`, position: "top", fontSize: 10, fill: C.muted }} />
-              ))}
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -389,10 +366,6 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
           );
         })}
       </div>
-
-      {sellMarks.length > 0 && (
-        <div className="fc-chart-note">○ Verkauf – die Rendite bis zum Verkauf bleibt in der Kurve enthalten.</div>
-      )}
 
       {!showPerf && activeBms.length > 0 && (
         <div className="fc-chart-note">Vergleichsindizes werden in der %-Ansicht angezeigt.</div>
