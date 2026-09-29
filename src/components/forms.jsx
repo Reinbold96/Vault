@@ -2,38 +2,65 @@ import React, { useState, useMemo } from "react";
 import { Check, Pencil, Trash2, ArrowDownLeft, ArrowUpRight, Percent } from "lucide-react";
 import {
   C, INCOME_TYPES, INVEST_TYPES, COMMODITIES, VALUE_TYPES, EXPENSE_CATS, VARIABLE_CATS, SAVE_CAT,
-  KNOWN_ASSETS, CURRENCIES, CREDIT_KINDS,
+  KNOWN_ASSETS, CURRENCIES, CREDIT_KINDS, INTERVALS,
 } from "../lib/constants.jsx";
 import { getCur, curSym, eur, eurFull, money, fmtQty, fmtDay } from "../lib/currency.js";
 import { todayIso, addDays } from "../lib/utils.js";
-import { payoffPlan, monthsUntil, monthsLabel, fifo, cashAmount, propValueAt, creditKindOf } from "../lib/finance.js";
+import { payoffPlan, monthsUntil, monthsLabel, fifo, cashAmount, propValueAt, creditKindOf, monthlyIn, fxOf } from "../lib/finance.js";
 import { NOTICE_UNITS, RENEWALS, RENEWAL_IDS, REMIND_DAYS, contractStatus, localTodayIso, statusLabel } from "../lib/contracts.js";
 import { Btn, Field, NumInput, Sub } from "./ui.jsx";
 
 /* ---------- Formulare ---------- */
-export function IncomeForm({ initial, onSave }) {
+/* Betrag mit eigener Währung (EUR/USD/CHF) – umgerechnet wird in der Anzeigewährung */
+function AmountCcy({ value, ccy, onValue, onCcy }) {
+  return (
+    <div className="fc-amtccy">
+      <NumInput value={value} onChange={onValue} placeholder="0" />
+      <select value={ccy || getCur()} onChange={(e) => onCcy(e.target.value)} aria-label="Währung">
+        {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+    </div>
+  );
+}
+/* Hinweis mit dem umgerechneten Monatsbetrag, nur bei Fremdwährung */
+function FxHint({ item, fxRates }) {
+  if (!item.ccy || item.ccy === getCur() || !(Number(item.amount) > 0)) return null;
+  const rate = fxOf(item.ccy, fxRates);
+  return (
+    <div style={{ fontSize: 13, color: C.muted, margin: "-6px 0 14px", lineHeight: 1.4 }}>
+      ≈ <b>{eurFull(monthlyIn(item, fxRates))}</b> pro Monat zum aktuellen Kurs (1 {item.ccy} = {rate.toFixed(4).replace(".", ",")} {getCur()}).
+      Summen und Überschuss rechnen in {getCur()}.
+    </div>
+  );
+}
+/* Nur echte Fremdwährungen speichern – die Anzeigewährung bleibt ohne Feld */
+const withCcy = (f) => {
+  const { ccy, ...rest } = f;
+  return ccy && ccy !== getCur() ? { ...rest, ccy } : rest;
+};
+
+export function IncomeForm({ initial, onSave, fxRates = {} }) {
   const [f, setF] = useState(initial || { name: "", type: "gehalt", amount: "" });
   return (
     <div className="fc-form">
       <Field label="Bezeichnung">
         <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="z. B. Gehalt" />
       </Field>
-      <div className="fc-row2">
-        <Field label="Art">
-          <select value={f.type} onChange={(e) => setF({ ...f, type: e.target.value })}>
-            {INCOME_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-          </select>
-        </Field>
-        <Field label={`Betrag / Monat (${curSym()})`}>
-          <NumInput value={f.amount} onChange={(v) => setF({ ...f, amount: v })} placeholder="0" />
-        </Field>
-      </div>
-      <Btn disabled={!f.name || !f.amount} onClick={() => onSave({ ...f, amount: Number(f.amount) })}>Speichern</Btn>
+      <Field label="Art">
+        <select value={f.type} onChange={(e) => setF({ ...f, type: e.target.value })}>
+          {INCOME_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+      </Field>
+      <Field label="Betrag / Monat">
+        <AmountCcy value={f.amount} ccy={f.ccy} onValue={(v) => setF({ ...f, amount: v })} onCcy={(c) => setF({ ...f, ccy: c })} />
+      </Field>
+      <FxHint item={{ ...f, interval: "monatlich" }} fxRates={fxRates} />
+      <Btn disabled={!f.name || !f.amount} onClick={() => onSave(withCcy({ ...f, amount: Number(f.amount) }))}>Speichern</Btn>
     </div>
   );
 }
 
-export function ExpenseForm({ initial, kind, onSave, catList, onAddCat }) {
+export function ExpenseForm({ initial, kind, onSave, catList, onAddCat, fxRates = {} }) {
   const effKind = (initial && initial.kind) || kind || "fix";
   const isSave = effKind === "sparen";
   const cats = isSave ? [SAVE_CAT] : catList || (effKind === "variabel" ? VARIABLE_CATS : EXPENSE_CATS);
@@ -70,16 +97,21 @@ export function ExpenseForm({ initial, kind, onSave, catList, onAddCat }) {
         </Field>
       )}
       <div className="fc-row2">
-        <Field label={`Betrag (${curSym()})`}>
-          <NumInput value={f.amount} onChange={(v) => setF({ ...f, amount: v })} placeholder="0" />
+        <Field label="Betrag">
+          <AmountCcy value={f.amount} ccy={f.ccy} onValue={(v) => setF({ ...f, amount: v })} onCcy={(c) => setF({ ...f, ccy: c })} />
         </Field>
         <Field label="Intervall">
-          <select value={f.interval} onChange={(e) => setF({ ...f, interval: e.target.value })}>
-            <option value="monatlich">monatlich</option>
-            <option value="jaehrlich">jährlich</option>
+          <select value={INTERVALS.some((i) => i.id === f.interval) ? f.interval : "monatlich"} onChange={(e) => setF({ ...f, interval: e.target.value })}>
+            {INTERVALS.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
           </select>
         </Field>
       </div>
+      <FxHint item={f} fxRates={fxRates} />
+      {!(f.ccy && f.ccy !== getCur()) && f.interval && f.interval !== "monatlich" && Number(f.amount) > 0 && (
+        <div style={{ fontSize: 13, color: C.muted, margin: "-6px 0 14px", lineHeight: 1.4 }}>
+          ≈ <b>{eurFull(monthlyIn(f, fxRates))}</b> pro Monat.
+        </div>
+      )}
       {isFix && (
         <>
           <div className="fc-row2">
@@ -138,7 +170,7 @@ export function ExpenseForm({ initial, kind, onSave, catList, onAddCat }) {
       )}
       <Btn
         disabled={!f.name || !f.amount || f.category === "__new"}
-        onClick={() => onSave({
+        onClick={() => onSave(withCcy({
           /* deadline/days stammen aus alten Fassungen (Übersicht → Öffnen) und gehören nicht in die Daten */
           ...Object.fromEntries(Object.entries(f).filter(([k]) => k !== "deadline" && k !== "days")),
           until: st && st.renewed ? st.end : (f.until || ""),
@@ -148,7 +180,7 @@ export function ExpenseForm({ initial, kind, onSave, catList, onAddCat }) {
           noticeUnit: f.noticeUnit || "m",
           renew: f.until ? renew : 0,
           remind: !!f.until && !!f.remind,
-        })}
+        }))}
       >Speichern</Btn>
     </div>
   );
