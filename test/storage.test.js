@@ -54,3 +54,22 @@ describe("Backup", () => {
     expect(s.lockEnabled).toBe(false); expect(s.lockCredId).toBe("");
   });
 });
+
+describe("Backup: Verträge und Kreditart", () => {
+  it("behält Verlängerung, Frist-Einheit, Erinnerung und Kreditart", () => {
+    const r = parseBackup(JSON.stringify({
+      expenses: [
+        { name: "Handy", amount: 30, until: "2026-12-31", notice: 1, noticeUnit: "m", renew: 1, remind: true },
+        { name: "Alt", amount: 10, until: "2026-12-31", notice: 3 },
+        { name: "Kaputt", amount: 10, noticeUnit: "x", renew: 7, remind: "ja" },
+      ],
+      credits: [{ name: "Haus", rate: 1000, kind: "immo" }, { name: "Alt", rate: 100 }, { name: "X", rate: 1, kind: "quatsch" }],
+    }));
+    expect(r.data.expenses[0]).toMatchObject({ noticeUnit: "m", renew: 1, remind: true });
+    expect(r.data.expenses[1]).toMatchObject({ noticeUnit: "m", renew: 0, remind: false });
+    expect(r.data.expenses[2]).toMatchObject({ noticeUnit: "m", renew: 0, remind: false });
+    expect(r.data.credits[0].kind).toBe("immo");
+    expect(r.data.credits[1].kind).toBeUndefined();
+    expect(r.data.credits[2].kind).toBeUndefined();
+  });
+});

@@ -70,3 +70,34 @@ describe("buildGroups", () => {
     expect(g.find((x) => x.type === "cash").value).toBe(900);
   });
 });
+
+describe("Kreditart und Kosten-Aufteilung", () => {
+  it("erkennt Immobilienkredite am Namen, explizite Art hat Vorrang", async () => {
+    const { creditKindOf } = await import("../src/lib/finance.js");
+    expect(creditKindOf({ name: "Immobilienkredit" })).toBe("immo");
+    expect(creditKindOf({ name: "Baufinanzierung Sparkasse" })).toBe("immo");
+    expect(creditKindOf({ name: "Autokredit" })).toBe("sonstiges");
+    expect(creditKindOf({ name: "Hauskredit", kind: "konsum" })).toBe("konsum");
+  });
+  it("Immobilienrate zählt zu den Fixkosten, nicht doppelt unter Krediten", async () => {
+    const { costBreakdown } = await import("../src/lib/finance.js");
+    const c = costBreakdown(
+      [
+        { kind: "fix", amount: 100, interval: "monatlich" },
+        { kind: "fix", amount: 120, interval: "jaehrlich" },
+        { kind: "variabel", amount: 300, interval: "monatlich" },
+        { kind: "sparen", amount: 500, interval: "monatlich" },
+      ],
+      [{ name: "Haus", kind: "immo", rate: 1200 }, { name: "Auto", kind: "auto", rate: 250 }],
+    );
+    expect(c.fixExpenses).toBe(110);
+    expect(c.immoRate).toBe(1200);
+    expect(c.fixTotal).toBe(1310);
+    expect(c.varTotal).toBe(300);
+    expect(c.savingsTotal).toBe(500);
+    expect(c.creditRate).toBe(1450);
+    expect(c.otherCreditRate).toBe(250);
+    /* Überschuss bleibt unverändert: Kosten + übrige Kredite = alte Rechnung */
+    expect(c.fixTotal + c.varTotal + c.otherCreditRate).toBe(c.fixExpenses + c.varTotal + c.creditRate);
+  });
+});
