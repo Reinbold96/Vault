@@ -13,9 +13,21 @@
 - Kündigungsfrist in **Monaten, Wochen oder Tagen**; Vorschau im Formular („Kündigen bis … · Laufzeit endet …“).
 - „Gekündigt – endet am …“ stellt den Vertrag auf „endet“ und schaltet die Erinnerung ab.
 - Behoben: Fristen an Monatsenden lagen bis zu 3 Tage zu spät (31.05. − 3 Monate ergab 02.03. statt 28.02.), Datumsrechnung war zeitzonenabhängig, „Öffnen“ auf der Übersicht schrieb Hilfsfelder in den Eintrag, der Hinweis unter der Karte galt nur für den ersten Vertrag.
-- Backup enthält die neuen Felder (Verlängerung, Frist-Einheit, Erinnerung, Kreditart).
+- Backup enthält die neuen Felder (Verlängerung, Frist-Einheit, Erinnerung, Kreditart, Intervall, Währung, ausgeblendete Positionen).
+
+### Fixkosten: Intervalle, Währung, Kategorien
+- Neue Intervalle **quartalsweise** und **halbjährlich** (z. B. Grundsteuer, Rundfunkbeitrag, Versicherungen) – umgerechnet auf den Monat.
+- **Eigene Währung pro Posten** (EUR/USD/CHF) für Fixkosten, variable Kosten, Sparraten und Einnahmen – z. B. Lohn oder Krankenkasse in CHF. Summen, Ring, Cashflow und Überschuss rechnen zum aktuellen Kurs in der Anzeigewährung; die Liste zeigt zusätzlich den Originalbetrag. Die letzten Kurse werden gemerkt, damit offline nicht 1:1 gerechnet wird.
+- Neue Kategorien **Energie**, **Kommunikation** und **Steuern & Abgaben**. Bestehende Einträge bleiben in ihrer Kategorie.
+
+### Verkaufte Positionen bleiben in der Performance
+- Invest-Tab: vollständig verkaufte Positionen stehen in einem eigenen Bereich **„Abgeschlossen“** (mit realisiertem Gewinn, Rendite in %, Haltedauer) statt zwischen den offenen Positionen. Sie lassen sich **ausblenden** – die Performance zählt sie weiter.
+- **Trade-Karte** je verkaufter Position: Kursverlauf mit Kauf ▲ und Verkauf ▼, Haltephase hinterlegt, Einstand/Erlös/Gewinn/Rendite/p. a./Haltedauer und **„Seit Verkauf“** (was wäre die Position heute wert). „Wieder kaufen“ holt sie zurück; „Endgültig löschen“ ist bewusst nur noch hier.
+- Kachel **„Performance“** = offene Kursgewinne + realisierte Gewinne + Ausschüttungen (vorher ohne Ausschüttungen). Antippen öffnet die **Performance-Bilanz**: je Jahr oder gesamt, Aufteilung offen/realisiert/Ausschüttungen, **Sparerpauschbetrag** (1 000 € bzw. 2 000 € mit Splitting laut Profil; vereinfacht, ohne Krypto/Edelmetalle) und Top & Flop inkl. verkaufter Positionen.
+- Portfolio-Chart: Verkäufe als Marker auf der Linie.
 
 ### Hinweis zur Umstellung
+- Die Performance-Kachel steigt um die bisher gebuchten Ausschüttungen.
 - Bestehende Verträge haben das Erinnerungs-Häkchen noch nicht gesetzt und erscheinen deshalb nicht mehr auf der Übersicht, bis es aktiviert wird. Alte Einträge ohne Angabe zur Verlängerung gelten als „endet“.
 
 ## 1.5.1 – 2026-09-02
