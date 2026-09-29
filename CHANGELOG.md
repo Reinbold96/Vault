@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.6.0 – 2026-09-29
+
+### Immobilienkredit in den Fixkosten
+- Kredite haben jetzt eine **Art** (Immobilien-, Auto-, Ratenkredit, Sonstiges). Bestehende Kredite werden am Namen erkannt („Immobilienkredit“, „Baufinanzierung“, „Haus“ …), die Art lässt sich beim Bearbeiten festlegen.
+- Die Monatsrate eines Immobilienkredits steht unter **Fixkosten → Wohnen** – nicht editierbar, mit Pfeil; Antippen springt direkt in den Kredit.
+- Sie zählt zu Fixkosten, Gesamtkosten und zur Kategorie Wohnen im Ausgaben-Ring. In der Cashflow-Leiste erscheint sie nicht mehr zusätzlich unter „Kredite“ – der Überschuss bleibt exakt gleich.
+
+### Kündigungserinnerungen
+- Neues Häkchen **„Auf der Übersicht an die Kündigung erinnern“** – nur damit erscheint ein Vertrag auf der Übersicht. Der Hinweis in der Fixkosten-Liste bleibt unabhängig davon.
+- **Automatische Verlängerung** (12/24/6/3 Monate, monatlich oder keine): Ist die Laufzeit vorbei, rechnet die App mit der nächsten Laufzeit weiter, statt dauerhaft „Frist verstrichen“ zu zeigen.
+- Kündigungsfrist in **Monaten, Wochen oder Tagen**; Vorschau im Formular („Kündigen bis … · Laufzeit endet …“).
+- „Gekündigt – endet am …“ stellt den Vertrag auf „endet“ und schaltet die Erinnerung ab.
+- Behoben: Fristen an Monatsenden lagen bis zu 3 Tage zu spät (31.05. − 3 Monate ergab 02.03. statt 28.02.), Datumsrechnung war zeitzonenabhängig, „Öffnen“ auf der Übersicht schrieb Hilfsfelder in den Eintrag, der Hinweis unter der Karte galt nur für den ersten Vertrag.
+- Backup enthält die neuen Felder (Verlängerung, Frist-Einheit, Erinnerung, Kreditart).
+
+### Hinweis zur Umstellung
+- Bestehende Verträge haben das Erinnerungs-Häkchen noch nicht gesetzt und erscheinen deshalb nicht mehr auf der Übersicht, bis es aktiviert wird. Alte Einträge ohne Angabe zur Verlängerung gelten als „endet“.
+
 ## 1.5.1 – 2026-09-02
 
 - **Portfolio-Chart zeigte nur Positionen mit Kurshistorie.** Aktien/ETFs ohne Twelve-Data-Key (oder ohne verfügbare Historie) fielen aus dem Chart-Wert heraus – die Kopfzeile zeigte z. B. 7 308 € bei 13 076 € Portfoliowert. Solche Positionen zählen jetzt mit ihrem aktuellen Kurs als konstanter Wert; in die %-Kurve gehen sie nicht ein. Ein Hinweis unter dem Chart nennt die betroffenen Positionen.
