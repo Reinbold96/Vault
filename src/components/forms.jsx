@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import { Check, Pencil, Trash2, ArrowDownLeft, ArrowUpRight, Percent } from "lucide-react";
 import {
   C, INCOME_TYPES, INVEST_TYPES, COMMODITIES, VALUE_TYPES, EXPENSE_CATS, VARIABLE_CATS, SAVE_CAT,
@@ -7,8 +7,9 @@ import {
 import { getCur, curSym, eur, eurFull, money, fmtQty, fmtDay } from "../lib/currency.js";
 import { todayIso, addDays } from "../lib/utils.js";
 import { payoffPlan, monthsUntil, monthsLabel, fifo, cashAmount, propValueAt, creditKindOf, monthlyIn, fxOf } from "../lib/finance.js";
-import { NOTICE_UNITS, RENEWALS, RENEWAL_IDS, REMIND_DAYS, contractStatus, localTodayIso, statusLabel } from "../lib/contracts.js";
+import { NOTICE_UNITS, RENEWALS, RENEWAL_IDS, REMIND_DAYS, contractStatus, localTodayIso, statusLabel, cancelEndFor } from "../lib/contracts.js";
 import { Btn, Field, NumInput, Sub } from "./ui.jsx";
+import { ID_MODES, isValidIsin, isValidWkn, detectIdType, idProblem, resolveSecurity, isUsMic } from "../lib/identifiers.js";
 
 /* ---------- Formulare ---------- */
 /* Betrag mit eigener Währung (EUR/USD/CHF) – umgerechnet wird in der Anzeigewährung */
@@ -33,6 +34,14 @@ function FxHint({ item, fxRates }) {
     </div>
   );
 }
+/* Kennungen nur speichern, wenn gesetzt – Ticker-Positionen bleiben unverändert schlank */
+const withIds = (f) => {
+  const out = { ...f };
+  const capable = out.type === "aktie" || out.type === "etf";
+  for (const k of ["isin", "wkn", "mic", "exchange"]) if (!out[k] || !capable) delete out[k];
+  if (!out.idType || out.idType === "ticker" || !(out.isin || out.wkn)) delete out.idType;
+  return out;
+};
 /* Nur echte Fremdwährungen speichern – die Anzeigewährung bleibt ohne Feld */
 const withCcy = (f) => {
   const { ccy, ...rest } = f;
@@ -60,6 +69,20 @@ export function IncomeForm({ initial, onSave, fxRates = {} }) {
   );
 }
 
+/* Kündigungsfelder: nur bei gekündigten Fixkosten speichern. "Behalten" nach Ablauf
+   gilt nur für das bisherige Enddatum – wird es in die Zukunft verschoben, zählt es neu. */
+const CANCEL_KEYS = ["cancelled", "cancelEnd", "cancelledOn", "cancelConfirmed", "endAck"];
+function cancelFields(f, today, isFix) {
+  if (!isFix || !f.cancelled) return {};
+  return {
+    cancelled: true,
+    cancelEnd: f.cancelEnd || "",
+    cancelledOn: f.cancelledOn || "",
+    cancelConfirmed: !!f.cancelConfirmed,
+    endAck: !!f.endAck && !!f.cancelEnd && f.cancelEnd < today,
+  };
+}
+
 export function ExpenseForm({ initial, kind, onSave, catList, onAddCat, fxRates = {} }) {
   const effKind = (initial && initial.kind) || kind || "fix";
   const isSave = effKind === "sparen";
@@ -69,7 +92,8 @@ export function ExpenseForm({ initial, kind, onSave, catList, onAddCat, fxRates 
   const isFix = !isSave && effKind !== "variabel";
   /* Neue Verträge verlängern sich meist um 12 Monate; alte Einträge ohne Angabe gelten als "endet" */
   const renew = RENEWAL_IDS.includes(Number(f.renew)) ? Number(f.renew) : (initial && initial.until ? 0 : 12);
-  const st = isFix && f.until ? contractStatus({ ...f, renew }, localTodayIso()) : null;
+  const today = localTodayIso();
+  const st = isFix && f.until ? contractStatus({ ...f, renew }, today) : null;
   return (
     <div className="fc-form">
       <Field label="Bezeichnung">
@@ -114,57 +138,84 @@ export function ExpenseForm({ initial, kind, onSave, catList, onAddCat, fxRates 
       )}
       {isFix && (
         <>
-          <div className="fc-row2">
-            <Field label="Laufzeit bis">
-              <input type="date" value={f.until || ""} onChange={(e) => setF({ ...f, until: e.target.value })} />
-            </Field>
-            <Field label="Verlängerung">
-              {/* Hat sich der Vertrag schon verlängert, gilt ab jetzt das aktuelle Laufzeitende */}
-              <select value={renew} onChange={(e) => setF({ ...f, until: st && st.renewed ? st.end : f.until, renew: Number(e.target.value) })} disabled={!f.until}>
-                {RENEWALS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
-              </select>
-            </Field>
+          <div className="fc-field"><span>Vertrag</span></div>
+          <div className="fc-pills" role="group" aria-label="Vertragsstatus" style={{ marginTop: -2 }}>
+            <button type="button" className={!f.cancelled ? "on" : ""} aria-pressed={!f.cancelled} onClick={() => setF({ ...f, cancelled: false })}>Läuft</button>
+            <button type="button" className={f.cancelled ? "on" : ""} aria-pressed={!!f.cancelled} onClick={() => setF({
+              ...f,
+              cancelled: true,
+              cancelEnd: f.cancelEnd || cancelEndFor({ ...f, renew }, today) || "",
+              cancelledOn: f.cancelledOn || today,
+            })}>Gekündigt</button>
           </div>
-          <div className="fc-row2">
-            <Field label="Kündigungsfrist">
-              <input type="number" inputMode="numeric" min="0" value={f.notice ?? ""} onChange={(e) => setF({ ...f, notice: e.target.value })} placeholder="z. B. 3" disabled={!f.until} />
-            </Field>
-            <Field label="Einheit">
-              <select value={f.noticeUnit || "m"} onChange={(e) => setF({ ...f, noticeUnit: e.target.value })} disabled={!f.until}>
-                {NOTICE_UNITS.map((u) => <option key={u.id} value={u.id}>{u.label}</option>)}
-              </select>
-            </Field>
-          </div>
-          {f.until ? (
+          {f.cancelled ? (
             <>
-              <button type="button" className="fc-check" onClick={() => setF({ ...f, remind: !f.remind })} aria-pressed={!!f.remind}>
-                <span className={`box ${f.remind ? "on" : ""}`}>{f.remind && <Check size={13} strokeWidth={3} />}</span>
-                <span>Auf der Übersicht an die Kündigung erinnern</span>
+              <div className="fc-row2">
+                <Field label="Gekündigt am">
+                  <input type="date" value={f.cancelledOn || ""} onChange={(e) => setF({ ...f, cancelledOn: e.target.value })} />
+                </Field>
+                <Field label="Vertrag endet am">
+                  <input type="date" value={f.cancelEnd || ""} onChange={(e) => setF({ ...f, cancelEnd: e.target.value })} />
+                </Field>
+              </div>
+              <button type="button" className="fc-check" onClick={() => setF({ ...f, cancelConfirmed: !f.cancelConfirmed })} aria-pressed={!!f.cancelConfirmed}>
+                <span className={`box ${f.cancelConfirmed ? "on" : ""}`}>{f.cancelConfirmed && <Check size={13} strokeWidth={3} />}</span>
+                <span>Kündigungsbestätigung erhalten</span>
               </button>
-              {st && (
-                <div className="fc-detail-note" style={{ margin: "-6px 0 14px" }}>
-                  {st.state === "ended"
-                    ? <>Laufzeit ist am <b>{fmtDay(st.end)}</b> abgelaufen und verlängert sich nicht.</>
-                    : st.state === "missed"
-                      ? <>Frist für diese Laufzeit ist am {fmtDay(st.deadline)} verstrichen – {st.renew ? <>verlängert sich am <b>{fmtDay(st.end)}</b>.</> : <>endet am <b>{fmtDay(st.end)}</b>.</>}</>
-                      : <>Kündigen bis <b>{fmtDay(st.deadline)}</b> ({statusLabel(st)}) · Laufzeit endet {fmtDay(st.end)}{st.renewed ? " (bereits verlängert)" : ""}.</>}
-                  {f.remind && st.state !== "ended" && ` Die Erinnerung erscheint jeweils ${REMIND_DAYS} Tage vor Fristende auf der Übersicht.`}
-                </div>
-              )}
-              {st && st.renew > 0 && st.state !== "ended" && (() => {
-                /* Gekündigt: Vertrag endet zum nächstmöglichen Termin, Erinnerung aus */
-                const endsAt = st.state === "missed" ? st.nextEnd : st.end;
-                return (
-                  <button type="button" className="fc-mini" onClick={() => setF({ ...f, until: endsAt, renew: 0, remind: false })}>
-                    Gekündigt – endet am {fmtDay(endsAt)}
-                  </button>
-                );
-              })()}
+              <div className="fc-detail-note" style={{ margin: "-6px 0 14px" }}>
+                {!f.cancelEnd
+                  ? <>Trag ein, wann der Vertrag endet – bis dahin zählt er zu den Fixkosten.</>
+                  : f.cancelEnd < today
+                    ? <>Beendet am <b>{fmtDay(f.cancelEnd)}</b> – zählt nicht mehr zu den Fixkosten. Du kannst den Eintrag löschen oder als Erinnerung behalten.</>
+                    : <>Zählt bis <b>{fmtDay(f.cancelEnd)}</b> zu den Fixkosten, danach sparst du {Number(f.amount) > 0 ? <b>{eurFull(monthlyIn(f, fxRates))}</b> : "den Betrag"} im Monat. Die Übersicht zeigt den Vertrag bis dahin als gekündigt{f.cancelConfirmed ? "." : " und erinnert an die fehlende Bestätigung."}</>}
+              </div>
             </>
           ) : (
-            <div style={{ fontSize: 13, color: C.muted, margin: "-6px 0 14px", lineHeight: 1.4 }}>
-              Optional: Mit Laufzeitende, Verlängerung und Frist berechnet die App deine nächste Kündigungsfrist – und erinnert dich auf Wunsch auf der Übersicht.
-            </div>
+            <>
+              <div className="fc-row2">
+                <Field label="Laufzeit bis">
+                  <input type="date" value={f.until || ""} onChange={(e) => setF({ ...f, until: e.target.value })} />
+                </Field>
+                <Field label="Verlängerung">
+                  {/* Hat sich der Vertrag schon verlängert, gilt ab jetzt das aktuelle Laufzeitende */}
+                  <select value={renew} onChange={(e) => setF({ ...f, until: st && st.renewed ? st.end : f.until, renew: Number(e.target.value) })} disabled={!f.until}>
+                    {RENEWALS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <div className="fc-row2">
+                <Field label="Kündigungsfrist">
+                  <input type="number" inputMode="numeric" min="0" value={f.notice ?? ""} onChange={(e) => setF({ ...f, notice: e.target.value })} placeholder="z. B. 3" disabled={!f.until} />
+                </Field>
+                <Field label="Einheit">
+                  <select value={f.noticeUnit || "m"} onChange={(e) => setF({ ...f, noticeUnit: e.target.value })} disabled={!f.until}>
+                    {NOTICE_UNITS.map((u) => <option key={u.id} value={u.id}>{u.label}</option>)}
+                  </select>
+                </Field>
+              </div>
+              {f.until ? (
+                <>
+                  <button type="button" className="fc-check" onClick={() => setF({ ...f, remind: !f.remind })} aria-pressed={!!f.remind}>
+                    <span className={`box ${f.remind ? "on" : ""}`}>{f.remind && <Check size={13} strokeWidth={3} />}</span>
+                    <span>Auf der Übersicht an die Kündigung erinnern</span>
+                  </button>
+                  {st && (
+                    <div className="fc-detail-note" style={{ margin: "-6px 0 14px" }}>
+                      {st.state === "ended"
+                        ? <>Laufzeit ist am <b>{fmtDay(st.end)}</b> abgelaufen und verlängert sich nicht.</>
+                        : st.state === "missed"
+                          ? <>Frist für diese Laufzeit ist am {fmtDay(st.deadline)} verstrichen – {st.renew ? <>verlängert sich am <b>{fmtDay(st.end)}</b>.</> : <>endet am <b>{fmtDay(st.end)}</b>.</>}</>
+                          : <>Kündigen bis <b>{fmtDay(st.deadline)}</b> ({statusLabel(st)}) · Laufzeit endet {fmtDay(st.end)}{st.renewed ? " (bereits verlängert)" : ""}.</>}
+                      {f.remind && st.state !== "ended" && ` Die Erinnerung erscheint jeweils ${REMIND_DAYS} Tage vor Fristende auf der Übersicht.`}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ fontSize: 13, color: C.muted, margin: "-6px 0 14px", lineHeight: 1.4 }}>
+                  Optional: Mit Laufzeitende, Verlängerung und Frist berechnet die App deine nächste Kündigungsfrist – und erinnert dich auf Wunsch auf der Übersicht. Schon gekündigt? Oben auf „Gekündigt“ tippen.
+                </div>
+              )}
+            </>
           )}
         </>
       )}
@@ -172,14 +223,15 @@ export function ExpenseForm({ initial, kind, onSave, catList, onAddCat, fxRates 
         disabled={!f.name || !f.amount || f.category === "__new"}
         onClick={() => onSave(withCcy({
           /* deadline/days stammen aus alten Fassungen (Übersicht → Öffnen) und gehören nicht in die Daten */
-          ...Object.fromEntries(Object.entries(f).filter(([k]) => k !== "deadline" && k !== "days")),
+          ...Object.fromEntries(Object.entries(f).filter(([k]) => !["deadline", "days", ...CANCEL_KEYS].includes(k))),
           until: st && st.renewed ? st.end : (f.until || ""),
           kind: effKind,
           amount: Number(f.amount),
           notice: f.notice === "" || f.notice == null ? "" : Math.max(0, Math.round(Number(f.notice) || 0)),
           noticeUnit: f.noticeUnit || "m",
           renew: f.until ? renew : 0,
-          remind: !!f.until && !!f.remind,
+          remind: !!f.until && !!f.remind && !f.cancelled,
+          ...cancelFields(f, today, isFix),
         }))}
       >Speichern</Btn>
     </div>
@@ -262,9 +314,68 @@ export function InvestForm({ initial, onSave, finnhubKey }) {
   const [f, setF] = useState(initial || { name: "", symbol: "", type: "etf", qty: "", buyPrice: "", price: "", logoUrl: "", buyDate: "", inChart: true });
   const [looking, setLooking] = useState(false);
   const [lookupMsg, setLookupMsg] = useState("");
+  /* Kennung: Ticker (Standard) oder ISIN/WKN – nur für Aktien und ETFs */
+  const [idMode, setIdMode] = useState(() => (initial && initial.idType && initial.idType !== "ticker" ? initial.idType : "ticker"));
+  const [idVal, setIdVal] = useState(() => (initial ? (initial.idType === "wkn" ? initial.wkn : initial.idType === "isin" ? initial.isin : "") || "" : ""));
+  /* Suchergebnis: null = noch nicht gesucht, false = nicht gefunden */
+  const [res, setRes] = useState(() => (initial && initial.idType && initial.idType !== "ticker" && initial.symbol
+    ? { name: initial.name, isin: initial.isin || "", wkn: initial.wkn || "", listings: [{ symbol: initial.symbol, exchange: initial.exchange || "", mic: initial.mic || "", ccy: "" }], stored: true }
+    : null));
+  const reqRef = useRef(0);
+  /* Zuletzt automatisch eingesetzter Name – wird bei neuer Kennung ersetzt, eigener Name bleibt */
+  const autoName = useRef("");
+  const idCapable = f.type === "aktie" || f.type === "etf";
+
+  async function resolveId(mode, raw) {
+    const v = String(raw || "").trim().toUpperCase().replace(/[\s-]/g, "");
+    if (mode === "isin" ? !isValidIsin(v) : !isValidWkn(v)) return;
+    const token = ++reqRef.current;
+    setLooking(true);
+    setLookupMsg("");
+    const r = await resolveSecurity(mode, v, { cur: getCur() });
+    if (token !== reqRef.current) return;
+    setLooking(false);
+    if (!r) {
+      setRes(false);
+      setF((p) => ({ ...p, idType: mode, isin: mode === "isin" ? v : p.isin || "", wkn: mode === "wkn" ? v : p.wkn || "" }));
+      return;
+    }
+    setRes(r);
+    const pick = r.pick || {};
+    setF((p) => {
+      const name = !p.name || p.name === autoName.current ? r.name || p.name : p.name;
+      autoName.current = name;
+      return {
+        ...p,
+        idType: mode,
+        isin: r.isin, wkn: r.wkn,
+        symbol: pick.symbol || "",
+        mic: pick.mic || "", exchange: pick.exchange || "",
+        name,
+        type: r.type,
+      };
+    });
+  }
+  function choose(l) {
+    setF((p) => ({ ...p, symbol: l.symbol, mic: l.mic || "", exchange: l.exchange || "" }));
+  }
+  function switchMode(m) {
+    if (m === idMode) return;
+    setIdMode(m);
+    setLookupMsg("");
+    reqRef.current++;
+    setLooking(false);
+    if (m === "ticker") { setF((p) => ({ ...p, idType: "ticker" })); return; }
+    const v = m === "isin" ? f.isin || "" : f.wkn || "";
+    setIdVal(v);
+    setRes(null);
+    if (v) resolveId(m, v);
+  }
 
   async function lookup() {
     const sym = (f.symbol || "").trim().toUpperCase();
+    /* ISIN im Ticker-Feld erkannt → automatisch auf ISIN umschalten */
+    if (idCapable && detectIdType(sym) === "isin") { setIdMode("isin"); setIdVal(sym); setF((p) => ({ ...p, symbol: "" })); resolveId("isin", sym); return; }
     if (!sym || f.name) return;
     const known = KNOWN_ASSETS[sym];
     if (known) {
@@ -311,6 +422,9 @@ export function InvestForm({ initial, onSave, finnhubKey }) {
 
   const sym = (f.symbol || "").trim().toUpperCase();
   const isValueType = VALUE_TYPES.includes(f.type);
+  /* Ohne Ticker (nicht gefunden) dient die Kennung selbst als Symbol – Kurs dann von Hand */
+  const idUsed = idCapable && idMode !== "ticker";
+  const saveSym = sym || (idUsed ? (idMode === "isin" ? f.isin : f.wkn) || "" : "");
 
   return (
     <div className="fc-form">
@@ -444,15 +558,84 @@ export function InvestForm({ initial, onSave, finnhubKey }) {
         </>
       ) : (
         <>
-          <Field label="Symbol / Ticker">
-            <input
-              value={f.symbol}
-              onChange={(e) => setF({ ...f, symbol: e.target.value.toUpperCase(), name: "" })}
-              onBlur={lookup}
-              placeholder="z. B. AAPL, IWDA, BTC"
-              autoFocus={!initial}
-            />
-          </Field>
+          {idCapable && (
+            <div className="fc-pills" role="group" aria-label="Kennung">
+              {ID_MODES.map((m) => (
+                <button key={m.id} type="button" className={idMode === m.id ? "on" : ""} aria-pressed={idMode === m.id} onClick={() => switchMode(m.id)}>{m.label}</button>
+              ))}
+            </div>
+          )}
+          {!idCapable || idMode === "ticker" ? (
+            <Field label="Symbol / Ticker">
+              <input
+                value={f.symbol}
+                onChange={(e) => setF({ ...f, symbol: e.target.value.toUpperCase(), name: "", isin: "", wkn: "", mic: "", exchange: "", idType: "ticker" })}
+                onBlur={lookup}
+                placeholder={ID_MODES[0].ph}
+                autoFocus={!initial}
+              />
+            </Field>
+          ) : (
+            <>
+              <Field label={idMode === "isin" ? "ISIN" : "WKN"}>
+                <input
+                  value={idVal}
+                  maxLength={idMode === "isin" ? 14 : 8}
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  onChange={(e) => {
+                    const v = e.target.value.toUpperCase();
+                    setIdVal(v);
+                    setRes(null);
+                    /* Neue Kennung: Ergebnis der alten Suche verwerfen */
+                    setF((p) => ({ ...p, symbol: "", mic: "", exchange: "", isin: "", wkn: "", name: p.name === autoName.current ? "" : p.name }));
+                    const c = v.replace(/[\s-]/g, "");
+                    if (idMode === "isin" ? isValidIsin(c) : isValidWkn(c)) resolveId(idMode, c);
+                  }}
+                  onBlur={() => { if (res === null) resolveId(idMode, idVal); }}
+                  placeholder={(ID_MODES.find((m) => m.id === idMode) || {}).ph}
+                  autoFocus={!initial}
+                />
+              </Field>
+              {idProblem(idMode, idVal) && <div className="fc-idhint err">{idProblem(idMode, idVal)}</div>}
+              {looking && <div className="fc-idhint">Suche Wertpapier …</div>}
+              {res && (
+                <div className="fc-idcard">
+                  <div className="t">{f.name || res.name || f.symbol}<span className="fc-tag">{f.type === "etf" ? "ETF" : "Aktie"}</span></div>
+                  <div className="s">{[res.isin || f.isin ? `ISIN ${res.isin || f.isin}` : null, res.wkn || f.wkn ? `WKN ${res.wkn || f.wkn}` : null].filter(Boolean).join(" · ")}</div>
+                  {res.listings.length > 0 && (
+                    <>
+                      <div className="l">Kurse über</div>
+                      <div className="fc-idlist">
+                        {res.listings.map((l) => {
+                          const on = l.symbol === f.symbol && (l.mic || "") === (f.mic || "");
+                          return (
+                            <button key={`${l.symbol}|${l.mic}`} type="button" className={on ? "on" : ""} aria-pressed={on} onClick={() => choose(l)}>
+                              <b>{l.symbol}</b>{l.exchange ? ` · ${l.exchange}` : ""}{l.ccy ? ` · ${l.ccy.replace("GBp", "GBX")}` : ""}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                  <div className="h">
+                    {isUsMic(f.mic)
+                      ? "Kurse kommen automatisch über Finnhub (US-Börse)."
+                      : "Europäische Börse: automatische Kurse nur mit kostenpflichtigem Twelve-Data-Plan – sonst den Kurs von Hand pflegen oder eine US-Notierung wählen."}
+                  </div>
+                </div>
+              )}
+              {res === false && (
+                <>
+                  <div className="fc-idhint err">Nicht gefunden. Du kannst den Ticker für die Kurse selbst eintragen – {idMode === "isin" ? "die ISIN" : "die WKN"} bleibt gespeichert.</div>
+                  <Field label="Ticker (für Kurse)">
+                    <input value={f.symbol} onChange={(e) => setF({ ...f, symbol: e.target.value.toUpperCase(), mic: "", exchange: "" })} placeholder="z. B. ASST" />
+                  </Field>
+                </>
+              )}
+            </>
+          )}
           <Field label="Name">
             <input
               value={looking ? "" : f.name}
@@ -486,8 +669,8 @@ export function InvestForm({ initial, onSave, finnhubKey }) {
             <span>Im Verlaufs-Chart anzeigen</span>
           </button>
           <Btn
-            disabled={!sym || !f.qty || looking}
-            onClick={() => onSave({ ...f, name: f.name || sym, symbol: sym, qty: Number(f.qty), buyPrice: Number(f.buyPrice) || 0, price: Number(f.price) || Number(f.buyPrice) || 0 })}
+            disabled={!saveSym || !f.qty || looking}
+            onClick={() => onSave(withIds({ ...f, name: f.name || saveSym, symbol: saveSym, qty: Number(f.qty), buyPrice: Number(f.buyPrice) || 0, price: Number(f.price) || Number(f.buyPrice) || 0 }))}
           >Speichern</Btn>
         </>
       )}
@@ -846,8 +1029,16 @@ export function AssetDetail({ group, divs = [], onAddLot, onEditLot, onDeleteLot
   const div12 = myDivs.filter((x) => (x.date || "") >= cut).reduce((s, x) => s + (Number(x.amt) || 0), 0);
   const pct = group.cost > 0 ? (group.unreal / group.cost) * 100 : 0;
 
+  const idLot = group.lots.find((l) => l.isin || l.wkn);
+  const idLine = [
+    group.ref.symbol ? `Ticker ${group.ref.symbol}${(idLot && idLot.exchange) ? ` · ${idLot.exchange}` : ""}` : null,
+    idLot && idLot.isin ? `ISIN ${idLot.isin}` : null,
+    idLot && idLot.wkn ? `WKN ${idLot.wkn}` : null,
+  ].filter(Boolean);
+
   return (
     <div>
+      {idLot && <div className="fc-idline">{idLine.join(" · ")}</div>}
       <div className="fc-detail-kpis">
         <div><span className="l">Wert</span><span className="v">{eur(group.value)}</span></div>
         <div><span className="l">Bestand</span><span className="v">{fmtQty(group.qty)} {unit}</span></div>

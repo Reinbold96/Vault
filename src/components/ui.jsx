@@ -75,6 +75,16 @@ export const Field = ({ label, children }) => (
   </label>
 );
 
+/* Blendet einen Wert sanft ein, sobald er sich ändert (nicht beim ersten Anzeigen) */
+export function Fresh({ v, children }) {
+  const prev = useRef(v);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (prev.current !== v) { prev.current = v; setTick((t) => t + 1); }
+  }, [v]);
+  return <span key={tick} className={tick ? "fc-fade" : undefined}>{children}</span>;
+}
+
 export const YearTag = () => <span className="fc-tag">Jährlich</span>;
 
 /* Untertitel aus mehreren kurzen Teilen – mit dezentem Trenner statt Textpunkt */
