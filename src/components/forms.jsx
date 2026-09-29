@@ -2,11 +2,12 @@ import React, { useState, useMemo } from "react";
 import { Check, Pencil, Trash2, ArrowDownLeft, ArrowUpRight, Percent } from "lucide-react";
 import {
   C, INCOME_TYPES, INVEST_TYPES, COMMODITIES, VALUE_TYPES, EXPENSE_CATS, VARIABLE_CATS, SAVE_CAT,
-  KNOWN_ASSETS, CURRENCIES,
+  KNOWN_ASSETS, CURRENCIES, CREDIT_KINDS,
 } from "../lib/constants.jsx";
 import { getCur, curSym, eur, eurFull, money, fmtQty, fmtDay } from "../lib/currency.js";
 import { todayIso, addDays } from "../lib/utils.js";
-import { payoffPlan, monthsUntil, monthsLabel, fifo, cashAmount, propValueAt } from "../lib/finance.js";
+import { payoffPlan, monthsUntil, monthsLabel, fifo, cashAmount, propValueAt, creditKindOf } from "../lib/finance.js";
+import { NOTICE_UNITS, RENEWALS, RENEWAL_IDS, REMIND_DAYS, contractStatus, localTodayIso, statusLabel } from "../lib/contracts.js";
 import { Btn, Field, NumInput, Sub } from "./ui.jsx";
 
 /* ---------- Formulare ---------- */
@@ -39,6 +40,9 @@ export function ExpenseForm({ initial, kind, onSave, catList, onAddCat }) {
   const [f, setF] = useState(initial || { name: isSave ? "Sparrate" : "", category: cats[0].id, amount: "", interval: "monatlich", kind: effKind });
   const [newCat, setNewCat] = useState("");
   const isFix = !isSave && effKind !== "variabel";
+  /* Neue Verträge verlängern sich meist um 12 Monate; alte Einträge ohne Angabe gelten als "endet" */
+  const renew = RENEWAL_IDS.includes(Number(f.renew)) ? Number(f.renew) : (initial && initial.until ? 0 : 12);
+  const st = isFix && f.until ? contractStatus({ ...f, renew }, localTodayIso()) : null;
   return (
     <div className="fc-form">
       <Field label="Bezeichnung">
@@ -79,21 +83,72 @@ export function ExpenseForm({ initial, kind, onSave, catList, onAddCat }) {
       {isFix && (
         <>
           <div className="fc-row2">
-            <Field label="Vertrag bis">
+            <Field label="Laufzeit bis">
               <input type="date" value={f.until || ""} onChange={(e) => setF({ ...f, until: e.target.value })} />
             </Field>
-            <Field label="Kündigungsfrist (Mon.)">
-              <input type="number" inputMode="numeric" value={f.notice ?? ""} onChange={(e) => setF({ ...f, notice: e.target.value })} placeholder="z. B. 3" />
+            <Field label="Verlängerung">
+              {/* Hat sich der Vertrag schon verlängert, gilt ab jetzt das aktuelle Laufzeitende */}
+              <select value={renew} onChange={(e) => setF({ ...f, until: st && st.renewed ? st.end : f.until, renew: Number(e.target.value) })} disabled={!f.until}>
+                {RENEWALS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+              </select>
             </Field>
           </div>
-          <div style={{ fontSize: 13, color: C.muted, margin: "-6px 0 14px", lineHeight: 1.4 }}>
-            Optional: Mit Vertragsende und Frist erinnert dich die App, sobald die Kündigung fällig wird.
+          <div className="fc-row2">
+            <Field label="Kündigungsfrist">
+              <input type="number" inputMode="numeric" min="0" value={f.notice ?? ""} onChange={(e) => setF({ ...f, notice: e.target.value })} placeholder="z. B. 3" disabled={!f.until} />
+            </Field>
+            <Field label="Einheit">
+              <select value={f.noticeUnit || "m"} onChange={(e) => setF({ ...f, noticeUnit: e.target.value })} disabled={!f.until}>
+                {NOTICE_UNITS.map((u) => <option key={u.id} value={u.id}>{u.label}</option>)}
+              </select>
+            </Field>
           </div>
+          {f.until ? (
+            <>
+              <button type="button" className="fc-check" onClick={() => setF({ ...f, remind: !f.remind })} aria-pressed={!!f.remind}>
+                <span className={`box ${f.remind ? "on" : ""}`}>{f.remind && <Check size={13} strokeWidth={3} />}</span>
+                <span>Auf der Übersicht an die Kündigung erinnern</span>
+              </button>
+              {st && (
+                <div className="fc-detail-note" style={{ margin: "-6px 0 14px" }}>
+                  {st.state === "ended"
+                    ? <>Laufzeit ist am <b>{fmtDay(st.end)}</b> abgelaufen und verlängert sich nicht.</>
+                    : st.state === "missed"
+                      ? <>Frist für diese Laufzeit ist am {fmtDay(st.deadline)} verstrichen – {st.renew ? <>verlängert sich am <b>{fmtDay(st.end)}</b>.</> : <>endet am <b>{fmtDay(st.end)}</b>.</>}</>
+                      : <>Kündigen bis <b>{fmtDay(st.deadline)}</b> ({statusLabel(st)}) · Laufzeit endet {fmtDay(st.end)}{st.renewed ? " (bereits verlängert)" : ""}.</>}
+                  {f.remind && st.state !== "ended" && ` Die Erinnerung erscheint jeweils ${REMIND_DAYS} Tage vor Fristende auf der Übersicht.`}
+                </div>
+              )}
+              {st && st.renew > 0 && st.state !== "ended" && (() => {
+                /* Gekündigt: Vertrag endet zum nächstmöglichen Termin, Erinnerung aus */
+                const endsAt = st.state === "missed" ? st.nextEnd : st.end;
+                return (
+                  <button type="button" className="fc-mini" onClick={() => setF({ ...f, until: endsAt, renew: 0, remind: false })}>
+                    Gekündigt – endet am {fmtDay(endsAt)}
+                  </button>
+                );
+              })()}
+            </>
+          ) : (
+            <div style={{ fontSize: 13, color: C.muted, margin: "-6px 0 14px", lineHeight: 1.4 }}>
+              Optional: Mit Laufzeitende, Verlängerung und Frist berechnet die App deine nächste Kündigungsfrist – und erinnert dich auf Wunsch auf der Übersicht.
+            </div>
+          )}
         </>
       )}
       <Btn
         disabled={!f.name || !f.amount || f.category === "__new"}
-        onClick={() => onSave({ ...f, kind: effKind, amount: Number(f.amount), notice: f.notice === "" || f.notice == null ? "" : Number(f.notice) })}
+        onClick={() => onSave({
+          /* deadline/days stammen aus alten Fassungen (Übersicht → Öffnen) und gehören nicht in die Daten */
+          ...Object.fromEntries(Object.entries(f).filter(([k]) => k !== "deadline" && k !== "days")),
+          until: st && st.renewed ? st.end : (f.until || ""),
+          kind: effKind,
+          amount: Number(f.amount),
+          notice: f.notice === "" || f.notice == null ? "" : Math.max(0, Math.round(Number(f.notice) || 0)),
+          noticeUnit: f.noticeUnit || "m",
+          renew: f.until ? renew : 0,
+          remind: !!f.until && !!f.remind,
+        })}
       >Speichern</Btn>
     </div>
   );
@@ -109,6 +164,7 @@ export function CreditForm({ initial, onSave }) {
     const lastAppliedIdx = paymentDay ? (now.getDate() >= paymentDay ? idx : idx - 1) : undefined;
     onSave({
       ...f,
+      kind: creditKindOf(f),
       rate: Number(f.rate),
       balance: Number(f.balance) || 0,
       interest: Number(f.interest) || 0,
@@ -124,6 +180,16 @@ export function CreditForm({ initial, onSave }) {
       <Field label="Bezeichnung">
         <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="z. B. Immobilienkredit" />
       </Field>
+      <Field label="Art">
+        <select value={creditKindOf(f)} onChange={(e) => setF({ ...f, kind: e.target.value })}>
+          {CREDIT_KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
+        </select>
+      </Field>
+      {creditKindOf(f) === "immo" && (
+        <div style={{ margin: "-6px 0 14px", fontSize: 13, lineHeight: 1.35, color: C.muted }}>
+          Die Monatsrate erscheint automatisch unter Fixkosten → Wohnen und zählt dort zu den Gesamtkosten.
+        </div>
+      )}
       <div className="fc-row2">
         <Field label={`Monatsrate (${curSym()})`}>
           <NumInput value={f.rate} onChange={(v) => setF({ ...f, rate: v })} placeholder="0" />
@@ -684,6 +750,7 @@ export function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit, onPlan })
           ? `Die Monatsrate wird am ${credit.paymentDay}. automatisch verbucht${credit.interest ? " – der Zinsanteil wird dabei abgezogen" : ""}.`
           : "Ohne Abbuchungstag bleibt die Restschuld unverändert – trage ihn beim Bearbeiten nach, dann tilgt die App automatisch."}
         {termMonths == null && " Trage einen Tilgungsschluss ein, dann kommt die Restlaufzeit aus deinem Vertrag statt aus der Hochrechnung."}
+        {creditKindOf(credit) === "immo" && " Als Immobilienkredit steht die Rate auch unter Fixkosten → Wohnen."}
         {extras.length > 0 && " Beim Löschen einer Sondertilgung wird der Betrag der Restschuld wieder zugerechnet."}
       </div>
     </div>
