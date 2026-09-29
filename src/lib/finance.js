@@ -227,6 +227,39 @@ export function buildGroups(investments, sells, fx) {
 export const monthly = (item) =>
   item.interval === "jaehrlich" ? (Number(item.amount) || 0) / 12 : Number(item.amount) || 0;
 
+/* ---------- Kreditart ----------
+   Alte Kredite ohne `kind` werden am Namen erkannt ("Immobilienkredit",
+   "Baufinanzierung Haus" …); über das Formular lässt sich die Art festlegen. */
+export const CREDIT_KIND_IDS = ["immo", "auto", "konsum", "sonstiges"];
+const IMMO_RE = /immo|haus|wohnung|eigenheim|baufinanz|hypothek|grundst|bauspar/i;
+export function creditKindOf(c) {
+  if (c && CREDIT_KIND_IDS.includes(c.kind)) return c.kind;
+  return c && IMMO_RE.test(c.name || "") ? "immo" : "sonstiges";
+}
+export const isImmoCredit = (c) => creditKindOf(c) === "immo";
+
+/* ---------- Monatliche Kosten-Aufteilung ----------
+   Die Rate eines Immobilienkredits zählt zu den Fixkosten (Kategorie Wohnen)
+   und deshalb NICHT noch einmal unter "Kredite" – der Überschuss bleibt gleich. */
+export function costBreakdown(expenses = [], credits = []) {
+  const sum = (list, fn) => list.reduce((s, x) => s + fn(x), 0);
+  const fixExpenses = sum(expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen"), monthly);
+  const varTotal = sum(expenses.filter((e) => e.kind === "variabel"), monthly);
+  const savingsTotal = sum(expenses.filter((e) => e.kind === "sparen"), monthly);
+  const rateOf = (c) => Number(c.rate) || 0;
+  const creditRate = sum(credits, rateOf);
+  const immoRate = sum(credits.filter(isImmoCredit), rateOf);
+  return {
+    fixExpenses,
+    immoRate,
+    fixTotal: fixExpenses + immoRate,
+    varTotal,
+    savingsTotal,
+    creditRate,
+    otherCreditRate: creditRate - immoRate,
+  };
+}
+
 /* Datenschlüssel einer Gruppe im Historien-Cache */
 export const histKeyOf = (g, cur) => g.type === "krypto"
   ? `cg:${g.ref.coinId || (g.ref.symbol || "").toUpperCase()}:${cur}`

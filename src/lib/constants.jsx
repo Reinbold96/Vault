@@ -46,6 +46,13 @@ export const INCOME_TYPES = [
   { id: "sonstiges", label: "Sonstiges" },
 ];
 
+export const CREDIT_KINDS = [
+  { id: "immo", label: "Immobilienkredit" },
+  { id: "auto", label: "Autokredit" },
+  { id: "konsum", label: "Ratenkredit" },
+  { id: "sonstiges", label: "Sonstiger Kredit" },
+];
+
 export const INVEST_TYPES = [
   { id: "aktie", label: "Aktie" },
   { id: "etf", label: "ETF" },

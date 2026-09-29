@@ -3,6 +3,8 @@
    - Kurshistorie: IndexedDB (kann mehrere MB werden; localStorage-Quota ~5 MB)
    - Backup: Export/Import mit Schema-Normalisierung und Versions-Migration */
 import { CURRENCIES } from "./constants.jsx";
+import { RENEWAL_IDS } from "./contracts.js";
+import { CREDIT_KIND_IDS } from "./finance.js";
 
 export const DATA_KEY = "finanz_state_v1";
 export const SETTINGS_KEY = "finanz_settings_v1";
@@ -102,9 +104,13 @@ export function normalizeData(raw) {
       interval: x.interval === "jaehrlich" ? "jaehrlich" : "monatlich",
       kind: ["variabel", "sparen"].includes(x.kind) ? x.kind : "fix",
       until: str(x.until), notice: numOrEmpty(x.notice),
+      noticeUnit: ["m", "w", "d"].includes(x.noticeUnit) ? x.noticeUnit : "m",
+      renew: RENEWAL_IDS.includes(Number(x.renew)) ? Number(x.renew) : 0,
+      remind: x.remind === true,
     }, i)),
     credits: arr(d.credits).map((x, i) => withId({
       name: str(x.name), rate: num(x.rate), balance: num(x.balance), interest: num(x.interest),
+      ...(CREDIT_KIND_IDS.includes(x.kind) ? { kind: x.kind } : {}),
       paymentDay: num(x.paymentDay), endDate: str(x.endDate), fixedUntil: str(x.fixedUntil),
       followInterest: numOrEmpty(x.followInterest),
       lastAppliedIdx: typeof x.lastAppliedIdx === "number" ? x.lastAppliedIdx : undefined,
