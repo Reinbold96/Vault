@@ -9,14 +9,15 @@ import {
   C, SHADOW, MASK, CURRENCIES, VALUE_TYPES, HIST_TYPES, SAVE_CAT, INCOME_TYPES, INCOME_ICONS, ALL_CAT_ICONS,
   COMMODITIES, CRYPTO_IDS, CAT_COLORS, APP_VERSION, catsOf,
 } from "./lib/constants.jsx";
-import { CAN_HOVER, uid, agoLabel, todayIso, isoDay, addDays, daysBetween } from "./lib/utils.js";
+import { CAN_HOVER, uid, agoLabel, todayIso, addDays } from "./lib/utils.js";
 import { getCur, setCurrency, locale, curSym, eur, eurFull, money, fmtQty, fmtDay, roundPrice } from "./lib/currency.js";
 import { fetchFx } from "./lib/api.js";
 import { bioAvailable, bioRegister, bioVerify, sessionUnlocked, markUnlocked, clearUnlocked } from "./lib/auth.js";
 import {
   monthsUntil, applyDueCredits, gkeyOf, fifoAt, cashAmount, cashAtDate, propValueAt,
-  buildGroups, monthly, histKeyOf,
+  buildGroups, monthly, histKeyOf, costBreakdown, isImmoCredit,
 } from "./lib/finance.js";
+import { contractStatus, contractNote, dueReminders, localTodayIso, statusLabel } from "./lib/contracts.js";
 import { BUNDESLAENDER, blOf } from "./lib/tax.js";
 import {
   DATA_KEY, SETTINGS_KEY, MASKED_KEY, EMPTY, DEFAULT_SETTINGS, loadLS, saveLS, loadHist, saveHist,
@@ -188,20 +189,21 @@ export default function App() {
 
   /* Abgeleitete Zahlen */
   const incomeTotal = useMemo(() => data.incomes.reduce((s, i) => s + (Number(i.amount) || 0), 0), [data.incomes]);
-  const fixTotal = useMemo(() => data.expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen").reduce((s, e) => s + monthly(e), 0), [data.expenses]);
-  const varTotal = useMemo(() => data.expenses.filter((e) => e.kind === "variabel").reduce((s, e) => s + monthly(e), 0), [data.expenses]);
-  const savingsTotal = useMemo(() => data.expenses.filter((e) => e.kind === "sparen").reduce((s, e) => s + monthly(e), 0), [data.expenses]);
+  /* Fixkosten enthalten die Raten von Immobilienkrediten (Kategorie Wohnen);
+     unter "Kredite" zählen im Überschuss nur noch die übrigen Kredite. */
+  const costs = useMemo(() => costBreakdown(data.expenses, data.credits), [data.expenses, data.credits]);
+  const { fixTotal, varTotal, savingsTotal, creditRate, immoRate, otherCreditRate } = costs;
+  const immoCredits = useMemo(() => data.credits.filter(isImmoCredit), [data.credits]);
   const costTotal = fixTotal + varTotal;
   const budgetMode = settings.calcMode === "budget";
-  const creditRate = useMemo(() => data.credits.reduce((s, c) => s + (Number(c.rate) || 0), 0), [data.credits]);
   const creditBalance = useMemo(() => data.credits.reduce((s, c) => s + (Number(c.balance) || 0), 0), [data.credits]);
   const extraTotal = useMemo(
     () => data.credits.reduce((s, c) => s + (c.extras || []).reduce((a, e) => a + (Number(e.amt) || 0), 0), 0),
     [data.credits],
   );
-  const surplus = incomeTotal - costTotal - creditRate;
+  const surplus = incomeTotal - costTotal - otherCreditRate;
   /* Budget-Modus: was nach Fixkosten, Krediten und Sparrate für variable Ausgaben bleibt */
-  const budgetTotal = incomeTotal - fixTotal - creditRate - savingsTotal;
+  const budgetTotal = incomeTotal - fixTotal - otherCreditRate - savingsTotal;
   const budgetFree = budgetTotal - varTotal;
 
   /* Kategorien: eingebaute + eigene, inklusive Umbenennungen */
@@ -217,9 +219,10 @@ export default function App() {
   const catTotals = useMemo(() =>
     allCats.map((c) => ({
       ...c,
-      value: data.expenses.filter((e) => e.category === c.id && e.kind !== "sparen").reduce((s, e) => s + monthly(e), 0),
+      value: data.expenses.filter((e) => e.category === c.id && e.kind !== "sparen").reduce((s, e) => s + monthly(e), 0)
+        + (c.id === "wohnen" ? immoRate : 0),
     })).filter((c) => c.value > 0),
-  [data.expenses, allCats]);
+  [data.expenses, allCats, immoRate]);
 
   const catSum = useMemo(() => catTotals.reduce((a, c) => a + c.value, 0), [catTotals]);
   /* Auswahl (Tap) hat Vorrang, Hover nur als Vorschau auf Desktop */
@@ -231,20 +234,19 @@ export default function App() {
   /* Sehr lange Betraege werden kleiner gesetzt, damit sie nie an den Innenring stossen */
   const centerValSize = centerVal.length > 13 ? 14 : centerVal.length > 11 ? 15 : 17;
 
-  /* Verträge, deren Kündigung in den nächsten 60 Tagen fällig wird */
-  const dueContracts = useMemo(() => {
-    const today = todayIso();
-    return data.expenses
-      .filter((e) => e.until && e.kind !== "variabel")
-      .map((e) => {
-        const notice = Number(e.notice) || 0;
-        const end = new Date(e.until);
-        const deadline = isoDay(new Date(end.getFullYear(), end.getMonth() - notice, end.getDate()));
-        return { ...e, deadline, days: daysBetween(today, deadline) };
-      })
-      .filter((e) => e.days <= 60)
-      .sort((a, b) => a.days - b.days);
+  /* Verträge: aktueller Stand je Fixkosten-Eintrag (Laufzeit, Verlängerung, Frist)
+     und die Erinnerungen für die Übersicht – nur Einträge mit gesetztem Häkchen. */
+  const contractInfo = useMemo(() => {
+    const today = localTodayIso();
+    const m = {};
+    for (const e of data.expenses) {
+      if (e.kind === "variabel" || e.kind === "sparen") continue;
+      const st = contractStatus(e, today);
+      if (st) m[e.id] = st;
+    }
+    return m;
   }, [data.expenses]);
+  const reminders = useMemo(() => dueReminders(data.expenses, localTodayIso()), [data.expenses]);
 
   /* Positionen zu Gruppen zusammenfassen (mehrere Käufe eines Assets = eine Zeile) */
   const groups = useMemo(
@@ -1027,7 +1029,7 @@ export default function App() {
             <>
               <SectionTitle>Wohin dein Geld fliesst</SectionTitle>
               <Card>
-                <CashflowBar catTotals={catTotals} creditRate={creditRate} surplus={surplus} savings={savingsTotal} budgetFree={budgetFree} budgetMode={budgetMode} />
+                <CashflowBar catTotals={catTotals} creditRate={otherCreditRate} surplus={surplus} savings={savingsTotal} budgetFree={budgetFree} budgetMode={budgetMode} />
               </Card>
             </>
           )}
@@ -1085,22 +1087,25 @@ export default function App() {
             </>
           )}
 
-          {dueContracts.length > 0 && (
+          {reminders.length > 0 && (
             <>
               <SectionTitle>Kündigung fällig</SectionTitle>
               <Card>
-                {dueContracts.slice(0, 4).map((e) => (
+                {reminders.slice(0, 5).map(({ item: e, st }) => (
                   <div className="fc-warnrow" key={e.id}>
-                    <span className="nm">{e.name}</span>
-                    <span className="dt">
-                      {e.days < 0 ? "Frist verstrichen" : e.days === 0 ? "heute" : `in ${e.days} T.`}
+                    <span className="tx">
+                      <span className="nm">{e.name}</span>
+                      <span className="sb">kündigen bis {fmtDay(st.deadline)}</span>
                     </span>
+                    <span className="dt">{statusLabel(st)}</span>
                     <button className="fc-chip" onClick={() => { setTab("expenses"); setCostView("fix"); setSheet({ type: "expense", item: e }); }}>Öffnen</button>
                   </div>
                 ))}
-                <div className="fc-detail-note" style={{ marginTop: 10 }}>
-                  Kündigungsfrist läuft bis {fmtDay(dueContracts[0].deadline)} – Vertragsende {fmtDay(dueContracts[0].until)}.
-                </div>
+                {reminders.length > 5 && (
+                  <div className="fc-detail-note" style={{ marginTop: 10 }}>
+                    + {reminders.length - 5} weitere unter Kosten → Fixkosten
+                  </div>
+                )}
               </Card>
             </>
           )}
@@ -1237,32 +1242,52 @@ export default function App() {
                 <div className="fc-kpi"><div className="l">Versicherungen</div><div className="v">{eur(catTotals.find((c) => c.id === "versicherung")?.value || 0)}</div></div>
               </div>
               {fixCats.map((cat) => {
-                const items = data.expenses.filter((e) => e.category === cat.id && e.kind !== "variabel" && matches(e.name, cat.label));
-                if (!items.length) return null;
+                const items = data.expenses.filter((e) => e.category === cat.id && e.kind !== "variabel" && e.kind !== "sparen" && matches(e.name, cat.label));
+                /* Raten von Immobilienkrediten: nur Verweis, bearbeitet wird im Kredit */
+                const creditRows = cat.id === "wohnen" ? immoCredits.filter((c) => matches(c.name, cat.label, "Kredit")) : [];
+                if (!items.length && !creditRows.length) return null;
+                const sum = items.reduce((s, e) => s + monthly(e), 0) + creditRows.reduce((s, c) => s + (Number(c.rate) || 0), 0);
                 return (
                   <React.Fragment key={cat.id}>
-                    <SectionTitle right={<span className="fc-sum">{eur(items.reduce((s, e) => s + monthly(e), 0))} / Monat</span>}>{cat.label}</SectionTitle>
+                    <SectionTitle right={<span className="fc-sum">{eur(sum)} / Monat</span>}>{cat.label}</SectionTitle>
                     <Card>
-                      {items.map((e) => (
-                        <ListItem key={e.id}
-                          lead={<Lead icon={ALL_CAT_ICONS[e.category] || Tag} />}
-                          title={e.name}
-                          tag={e.interval === "jaehrlich" ? <YearTag /> : null}
-                          sub={<Sub parts={[
-                            e.interval === "jaehrlich" ? `${eurFull(e.amount)} / Jahr` : "monatlich",
-                            e.until ? `bis ${fmtDay(e.until)}` : null,
-                          ]} />}
-                          note={dueContracts.some((x) => x.id === e.id) ? `Kündigung bis ${fmtDay((dueContracts.find((x) => x.id === e.id) || {}).deadline)}` : null}
-                          value={eur(monthly(e))}
-                          onEdit={() => setSheet({ type: "expense", item: e })}
-                          onDelete={() => remove("expenses", e.id)}
+                      {creditRows.map((c) => (
+                        <ListItem key={`credit_${c.id}`}
+                          link
+                          ariaLabel={`${c.name}: Kredit öffnen`}
+                          lead={<Lead icon={Landmark} />}
+                          title={c.name}
+                          tag={<span className="fc-tag">Kredit</span>}
+                          sub={`Restschuld ${eur(c.balance)}`}
+                          value={eur(c.rate)}
+                          onEdit={() => { setTab("credits"); setSearch(""); setSheet({ type: "creditDetail", id: c.id }); }}
                         />
                       ))}
+                      {items.map((e) => {
+                        const st = contractInfo[e.id];
+                        const note = contractNote(st, fmtDay);
+                        return (
+                          <ListItem key={e.id}
+                            lead={<Lead icon={ALL_CAT_ICONS[e.category] || Tag} />}
+                            title={e.name}
+                            tag={e.interval === "jaehrlich" ? <YearTag /> : null}
+                            sub={<Sub parts={[
+                              e.interval === "jaehrlich" ? `${eurFull(e.amount)} / Jahr` : "monatlich",
+                              st ? `bis ${fmtDay(st.end)}` : null,
+                            ]} />}
+                            note={note ? note.text : null}
+                            noteTone={note ? note.tone : ""}
+                            value={eur(monthly(e))}
+                            onEdit={() => setSheet({ type: "expense", item: e })}
+                            onDelete={() => remove("expenses", e.id)}
+                          />
+                        );
+                      })}
                     </Card>
                   </React.Fragment>
                 );
               })}
-              {data.expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen").length === 0 && <div style={{ marginTop: 12 }}><Empty text="Erfasse Versicherungen, Miete, Abos und andere Fixkosten – monatlich oder jährlich." action={<Btn small onClick={() => setSheet({ type: "expense", kind: "fix" })}>Fixkosten hinzufügen</Btn>} /></div>}
+              {data.expenses.filter((e) => e.kind !== "variabel" && e.kind !== "sparen").length === 0 && immoCredits.length === 0 && <div style={{ marginTop: 12 }}><Empty text="Erfasse Versicherungen, Miete, Abos und andere Fixkosten – monatlich oder jährlich." action={<Btn small onClick={() => setSheet({ type: "expense", kind: "fix" })}>Fixkosten hinzufügen</Btn>} /></div>}
               {budgetMode && (
                 <>
                   <SectionTitle right={<span className="fc-sum">{eur(savingsTotal)} / Monat</span>}>{SAVE_CAT.label}</SectionTitle>
