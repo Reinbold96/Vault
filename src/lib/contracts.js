@@ -104,15 +104,64 @@ export function contractStatus(e, today) {
    Verlängerung taucht sie zur nächsten Frist automatisch wieder auf. */
 export function dueReminders(expenses, today, windowDays = REMIND_DAYS) {
   return (expenses || [])
-    .filter((e) => e && e.remind === true && e.kind !== "variabel" && e.kind !== "sparen")
+    .filter((e) => e && e.remind === true && !isCancelled(e) && e.kind !== "variabel" && e.kind !== "sparen")
     .map((e) => ({ item: e, st: contractStatus(e, today) }))
     .filter((x) => x.st && x.st.state === "open" && x.st.days <= windowDays)
     .sort((a, b) => a.st.days - b.st.days);
 }
 
+/* ---------- Gekündigte Verträge ----------
+   Felder am Eintrag: cancelled (true), cancelEnd (letzter Vertragstag),
+   cancelledOn (Kündigung verschickt), cancelConfirmed (Bestätigung liegt vor),
+   endAck (nach Ablauf auf der Übersicht "behalten" gewählt). */
+export const isCancelled = (e) => !!e && e.cancelled === true;
+
+/* Nach dem letzten Vertragstag zählt ein gekündigter Vertrag nicht mehr zu den Kosten */
+export const isOver = (e, today) => isCancelled(e) && isIsoDay(e.cancelEnd) && e.cancelEnd < today;
+
+export function cancelStatus(e, today) {
+  if (!isCancelled(e)) return null;
+  const end = isIsoDay(e.cancelEnd) ? e.cancelEnd : "";
+  return {
+    cancelled: true,
+    end,
+    days: end ? diffDays(today, end) : NaN,
+    on: isIsoDay(e.cancelledOn) ? e.cancelledOn : "",
+    confirmed: e.cancelConfirmed === true,
+    state: end && end < today ? "over" : "cancelled",
+  };
+}
+
+/* Vorschlag fürs Vertragsende beim Kündigen: aktuelles Laufzeitende –
+   ist die Frist schon verstrichen, das darauffolgende */
+export function cancelEndFor(e, today) {
+  const st = contractStatus(e, today);
+  if (!st) return "";
+  return st.state === "missed" && st.renew ? st.nextEnd : st.end;
+}
+
+/* Für die Übersicht: gekündigte Verträge bis zum Ende; danach einmal die Frage,
+   ob der Eintrag weg kann (bis "entfernen" oder "behalten" gewählt wurde).
+   Reihenfolge: abgelaufen → Bestätigung fehlt → nach Enddatum */
+export function cancelledList(expenses, today) {
+  const rank = (x) => (x.st.state === "over" ? 0 : x.st.confirmed ? 2 : 1);
+  return (expenses || [])
+    .filter((e) => isCancelled(e) && e.kind !== "variabel" && e.kind !== "sparen")
+    .map((e) => ({ item: e, st: cancelStatus(e, today) }))
+    .filter((x) => !(x.st.state === "over" && x.item.endAck === true))
+    .sort((a, b) => rank(a) - rank(b) || (a.st.end || "9999").localeCompare(b.st.end || "9999"));
+}
+
 /* Hinweis in der Fixkosten-Liste (unabhängig vom Erinnerungs-Häkchen) */
 export function contractNote(st, fmt = (x) => x, windowDays = REMIND_DAYS) {
   if (!st) return null;
+  if (st.cancelled) {
+    if (st.state === "over") return { text: `Beendet am ${fmt(st.end)} – zählt nicht mehr`, tone: "muted" };
+    const end = st.end ? `Endet am ${fmt(st.end)}` : "Enddatum fehlt";
+    return st.confirmed
+      ? { text: `${end} · bestätigt`, tone: "ok" }
+      : { text: `${end} · Bestätigung ausstehend`, tone: "muted" };
+  }
   if (st.state === "open") return st.days <= windowDays ? { text: `Kündigung bis ${fmt(st.deadline)}`, tone: "" } : null;
   if (st.state === "missed") {
     return st.renew
@@ -125,6 +174,13 @@ export function contractNote(st, fmt = (x) => x, windowDays = REMIND_DAYS) {
 /* Kurzer Text zum Status – für Listen und die Übersicht */
 export function statusLabel(st) {
   if (!st) return "";
+  if (st.cancelled) {
+    if (st.state === "over") return "beendet";
+    if (!isFinite(st.days)) return "";
+    if (st.days === 0) return "endet heute";
+    if (st.days === 1) return "endet morgen";
+    return `noch ${st.days} T.`;
+  }
   if (st.state === "ended") return "abgelaufen";
   if (st.state === "missed") return "Frist vorbei";
   if (st.days === 0) return "heute";

@@ -5,6 +5,7 @@
 import { CURRENCIES, INTERVAL_IDS } from "./constants.jsx";
 import { RENEWAL_IDS } from "./contracts.js";
 import { CREDIT_KIND_IDS } from "./finance.js";
+import { isValidIsin, isValidWkn } from "./identifiers.js";
 
 export const DATA_KEY = "finanz_state_v1";
 export const SETTINGS_KEY = "finanz_settings_v1";
@@ -97,6 +98,15 @@ const withId = (x, i) => ({ ...x, id: str(x.id) || `imp_${i}_${Math.random().toS
 const ccyOf = (x) => (CURRENCIES.includes(x.ccy) ? { ccy: x.ccy } : {});
 const flow = (f, i) => withId({ d: str(f.d), amt: num(f.amt), label: f.label == null ? undefined : str(f.label) }, i);
 
+/* ISIN/WKN/Börse: ungültige Werte fallen weg, statt die Position zu verfälschen */
+const idsOf = (x) => ({
+  isin: isValidIsin(x.isin) ? String(x.isin).toUpperCase() : undefined,
+  wkn: isValidWkn(x.wkn) ? String(x.wkn).toUpperCase() : undefined,
+  idType: ["isin", "wkn"].includes(x.idType) ? x.idType : undefined,
+  mic: typeof x.mic === "string" && /^[A-Z0-9]{3,5}$/.test(x.mic) ? x.mic : undefined,
+  exchange: typeof x.exchange === "string" && x.exchange ? x.exchange.slice(0, 40) : undefined,
+});
+
 export function normalizeData(raw) {
   const d = obj(raw) || {};
   return {
@@ -110,6 +120,10 @@ export function normalizeData(raw) {
       noticeUnit: ["m", "w", "d"].includes(x.noticeUnit) ? x.noticeUnit : "m",
       renew: RENEWAL_IDS.includes(Number(x.renew)) ? Number(x.renew) : 0,
       remind: x.remind === true,
+      ...(x.cancelled === true ? {
+        cancelled: true, cancelEnd: str(x.cancelEnd), cancelledOn: str(x.cancelledOn),
+        cancelConfirmed: x.cancelConfirmed === true, endAck: x.endAck === true,
+      } : {}),
     }, i)),
     credits: arr(d.credits).map((x, i) => withId({
       name: str(x.name), rate: num(x.rate), balance: num(x.balance), interest: num(x.interest),
@@ -121,6 +135,7 @@ export function normalizeData(raw) {
     }, i)),
     investments: arr(d.investments).map((x, i) => withId({
       ...x,
+      ...idsOf(x),
       name: str(x.name), symbol: str(x.symbol), type: str(x.type, "aktie"),
       qty: num(x.qty), buyPrice: num(x.buyPrice), price: num(x.price),
       buyDate: str(x.buyDate), logoUrl: str(x.logoUrl), inChart: x.inChart !== false,
