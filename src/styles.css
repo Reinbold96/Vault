@@ -70,7 +70,10 @@
 .fc-search input:focus{outline:none;border-color:var(--c-borderStrong);background:var(--c-canvas);}
 .fc-search .ic{position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--c-mutedSoft);display:flex;}
 .fc-search .clr{position:absolute;right:12px;top:50%;transform:translateY(-50%);border:none;background:none;color:var(--c-mutedSoft);cursor:pointer;font-size:16px;padding:4px;}
-.fc-form > .fc-btn.primary{position:sticky;bottom:-28px;z-index:3;box-shadow:0 -14px 18px 8px var(--c-canvas);}
+/* Speichern klebt unten. Der weiche Übergang darüber erscheint nur, solange darunter
+   noch Inhalt kommt (.more) – sonst würde er das letzte Feld (z. B. ein Häkchen) verdecken. */
+.fc-form > .fc-btn.primary{position:sticky;bottom:-28px;z-index:3;transition:box-shadow .15s;}
+.fc-sheet.more .fc-form > .fc-btn.primary{box-shadow:0 -14px 18px 8px var(--c-canvas);}
 .fc-goal{padding:12px 0;border-bottom:1px solid var(--c-hairlineSoft);}
 .fc-goal:last-of-type{border-bottom:none;}
 .fc-goal .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
@@ -318,3 +321,39 @@ html,body{overscroll-behavior-y:contain;}
 @keyframes fcToastIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .fc-hint .sync{display:inline-flex;align-items:center;gap:5px;color:var(--c-muted);}
 .fc-hint .sync svg{animation:fcSpin 1.2s linear infinite;}
+
+/* ---------- 1.8: Aufteilung, Sparplan, Import, Fehlerzustände ---------- */
+/* Kategorie-Farben (dataviz-Palette, gegen Farbfehlsichtigkeit geprüft – hell/dunkel) */
+.fc-root{--v1:#2a78d6;--v2:#eb6834;--v3:#1baf7a;--v4:#eda100;--v5:#e87ba4;--v6:#008300;--v7:#4a3aa7;}
+.fc-root.dark{--v1:#3987e5;--v2:#d95926;--v3:#199e70;--v4:#c98500;--v5:#d55181;--v6:#008300;--v7:#9085e9;}
+.fc-alloc-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;}
+.fc-alloc-head .t{font-size:16px;font-weight:600;color:var(--c-ink);}
+.fc-seg.fc-seg-mini{margin:0;padding:3px;gap:2px;flex:0 1 auto;}
+.fc-seg.fc-seg-mini button{padding:5px 10px;font-size:12.5px;flex:none;}
+.fc-alloc-legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:10px;font-size:12.5px;color:var(--c-muted);font-variant-numeric:tabular-nums;}
+.fc-alloc-legend i{display:inline-block;width:8px;height:8px;border-radius:9999px;margin-right:6px;vertical-align:1px;}
+.fc-alloc-legend .more{color:var(--c-mutedSoft);}
+/* Käufe/Verkäufe sind echte Buttons (Tastatur, Screenreader) */
+.fc-detail-row button.m{background:none;border:none;padding:0;text-align:left;font:inherit;color:inherit;display:block;}
+.fc-detail-row button.m:focus-visible{outline:2px solid var(--c-ink);outline-offset:2px;border-radius:6px;}
+.fc-detail-row button.m .t,.fc-detail-row button.m .s{display:block;}
+.fc-detail-row .m.static{cursor:default;}
+.fc-plan{display:flex;align-items:center;gap:12px;border:1px solid var(--c-hairline);border-radius:14px;padding:12px 14px;margin-top:12px;}
+.fc-plan .ic{width:36px;height:36px;border-radius:9999px;background:var(--c-soft);color:var(--c-positive);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;}
+.fc-plan.off .ic{color:var(--c-mutedSoft);}
+.fc-plan .m{flex:1;min-width:0;}
+.fc-plan .t{font-size:14.5px;font-weight:600;color:var(--c-ink);}
+.fc-plan .s{font-size:12.5px;color:var(--c-muted);margin-top:2px;}
+.fc-plan .acts{display:flex;gap:6px;flex-shrink:0;}
+.fc-mapgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin:4px 0 14px;}
+.fc-mapgrid label{display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--c-muted);min-width:0;}
+.fc-mapgrid select{width:100%;background:var(--c-canvas);border:1px solid var(--c-hairline);border-radius:8px;padding:8px;color:var(--c-ink);font-size:14px;}
+.fc-errbox{display:flex;flex-direction:column;gap:6px;align-items:flex-start;}
+.fc-errbox .t{font-size:14.5px;font-weight:600;color:var(--c-ink);}
+.fc-errbox .s{font-size:13px;color:var(--c-muted);line-height:1.4;}
+.fc-crash{max-width:420px;margin:18vh auto 0;padding:0 24px;text-align:center;font-family:Inter,-apple-system,system-ui,sans-serif;}
+.fc-crash .t{font-size:20px;font-weight:600;color:#222;margin-bottom:8px;}
+.fc-crash .s{font-size:14px;line-height:1.45;color:#6a6a6a;margin-bottom:20px;}
+.fc-crash button{display:block;width:100%;min-height:48px;border-radius:8px;font-size:16px;font-weight:500;cursor:pointer;margin-top:10px;}
+.fc-crash .b1{background:#ff385c;color:#fff;border:none;}
+.fc-crash .b2{background:#fff;color:#222;border:1px solid #222;}

@@ -17,9 +17,15 @@ export default defineConfig({
         chunkFileNames: "assets/[name]-[hash].js",
         // Vendor-Chunks aendern sich selten -> bleiben im Service-Worker-Cache,
         // waehrend der App-Code bei jedem Release neu kommt.
-        manualChunks(id) {
-          if (id.includes("node_modules/recharts") || id.includes("node_modules/d3-") || id.includes("node_modules/victory-vendor")) return "charts";
-          if (id.includes("node_modules/react") || id.includes("node_modules/scheduler")) return "react";
+        /* Vendor-Gruppen: React und die Chart-Bibliothek getrennt. Ohne
+           includeDependenciesRecursively:false zöge die Chart-Gruppe React als
+           Abhängigkeit mit in ihren Chunk – die Charts lägen wieder auf dem Startpfad. */
+        advancedChunks: {
+          includeDependenciesRecursively: false,
+          groups: [
+            { name: "react", test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 20 },
+            { name: "charts", test: /node_modules[\\/](recharts|d3-[^\\/]+|victory-vendor|react-redux|@reduxjs|immer|reselect|redux|es-toolkit|decimal\.js-light|eventemitter3|use-sync-external-store|tiny-invariant|clsx|react-is)[\\/]/, priority: 10 },
+          ],
         },
         // Das Web-App-Manifest MUSS im Site-Root bleiben (nicht unter assets/),
         // sonst loesen die relativen "start_url"/"scope" auf .../Vault/assets/

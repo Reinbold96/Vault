@@ -4,8 +4,8 @@ import { parseBackup, buildBackup, normalizeSettings, DEFAULT_SETTINGS } from ".
 describe("Backup", () => {
   it("Export enthält Steuerprofil und alle Einstellungen, aber keine App-Sperre", () => {
     const settings = { ...DEFAULT_SETTINGS, taxIncome: 85000, taxIncomeCcy: "CHF", splitting: true, kids: 2, birth: "1990-05-01", church: true, taxState: "by", finnhubKey: "abc", lockEnabled: true, lockCredId: "xyz" };
-    const b = buildBackup({ incomes: [] }, settings);
-    expect(b.vault).toBe(4);
+    const b = buildBackup({ incomes: [] }, settings, { includeKeys: true });
+    expect(b.vault).toBe(5);
     expect(b.settings.taxIncome).toBe(85000);
     expect(b.settings.taxIncomeCcy).toBe("CHF");
     expect(b.settings.splitting).toBe(true);
@@ -16,6 +16,10 @@ describe("Backup", () => {
     expect(b.settings.lockEnabled).toBeUndefined();
     expect(b.settings.lockCredId).toBeUndefined();
   });
+  it("Keys sind im Backup standardmässig nicht enthalten", () => {
+    const b = buildBackup({}, { ...DEFAULT_SETTINGS, finnhubKey: "abc", tdKey: "def" });
+    expect(b.settings.finnhubKey).toBeUndefined(); expect(b.settings.tdKey).toBeUndefined();
+  });
   it("Export ohne Keys lässt die Keys weg", () => {
     const b = buildBackup({}, { ...DEFAULT_SETTINGS, finnhubKey: "abc", tdKey: "def" }, { includeKeys: false });
     expect(b.settings.finnhubKey).toBeUndefined(); expect(b.settings.tdKey).toBeUndefined();
@@ -24,7 +28,7 @@ describe("Backup", () => {
     const settings = { ...DEFAULT_SETTINGS, taxIncome: 85000, splitting: true, kids: 2 };
     const txt = JSON.stringify(buildBackup({ incomes: [{ id: "i", name: "Gehalt", type: "gehalt", amount: 5000 }] }, settings));
     const r = parseBackup(txt);
-    expect(r.version).toBe(4);
+    expect(r.version).toBe(5);
     expect(r.data.incomes[0].amount).toBe(5000);
     const s = normalizeSettings(r.settings, DEFAULT_SETTINGS);
     expect(s.taxIncome).toBe(85000); expect(s.splitting).toBe(true); expect(s.kids).toBe(2);

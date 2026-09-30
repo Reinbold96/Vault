@@ -113,19 +113,19 @@ export function TradeCard({ group, divs = [], hist, fxRates = {}, archived, mask
       <div className="fc-detail-sec">Käufe &amp; Verkäufe</div>
       {lots.map((l) => (
         <div className="fc-detail-row" key={l.id}>
-          <div className="m" onClick={onEdit}>
-            <div className="t"><span style={{ color: C.positive }}>▲</span> {fmtQty(l.qty)} {unit} × {M(eurFull(l.buyPrice || 0))}</div>
-            <div className="s">{l.buyDate ? fmtDay(l.buyDate) : "ohne Kaufdatum"}</div>
-          </div>
+          <button type="button" className="m" onClick={onEdit}>
+            <span className="t"><span style={{ color: C.positive }}>▲</span> {fmtQty(l.qty)} {unit} × {M(eurFull(l.buyPrice || 0))}</span>
+            <span className="s">{l.buyDate ? fmtDay(l.buyDate) : "ohne Kaufdatum"}</span>
+          </button>
           <div className="r"><span className="a">{M(eur((Number(l.qty) || 0) * (Number(l.buyPrice) || 0)))}</span></div>
         </div>
       ))}
       {[...st.sells].reverse().map((s) => (
         <div className="fc-detail-row" key={s.id}>
-          <div className="m" onClick={onEdit}>
-            <div className="t"><span style={{ color: C.error }}>▼</span> {fmtQty(s.qty)} {unit} × {M(eurFull(s.price || 0))}</div>
-            <div className="s"><Sub parts={[fmtDay(s.date), <span key="r" style={{ color: tone(realizedById[s.id] || 0) }}>{M(signedEur(realizedById[s.id] || 0))}</span>]} /></div>
-          </div>
+          <button type="button" className="m" onClick={onEdit}>
+            <span className="t"><span style={{ color: C.error }}>▼</span> {fmtQty(s.qty)} {unit} × {M(eurFull(s.price || 0))}</span>
+            <span className="s"><Sub parts={[fmtDay(s.date), <span key="r" style={{ color: tone(realizedById[s.id] || 0) }}>{M(signedEur(realizedById[s.id] || 0))}</span>]} /></span>
+          </button>
           <div className="r"><span className="a">{M(eur((Number(s.qty) || 0) * (Number(s.price) || 0)))}</span></div>
         </div>
       ))}
@@ -171,16 +171,17 @@ export function PerformanceSheet({ groups, divs = [], splitting, masked, logos =
   const allPos = parts.every((p) => p.v >= 0) && total > 0;
   const onInvest = !y && s.invested > 0 ? (s.total / s.invested) * 100 : null;
   const taxYear = view === "all" ? thisYear : view;
-  const tb = s.byYear[taxYear] || { taxable: 0, divs: 0 };
-  const taxUsed = Math.max(0, tb.taxable + tb.divs);
+  const tb = s.byYear[taxYear] || { taxable: 0, divs: 0, divsGross: 0 };
+  /* Ausschüttungen brutto (Gutschrift + einbehaltene Steuer) – so zählt das Finanzamt */
+  const taxUsed = Math.max(0, tb.taxable + (tb.divsGross != null ? tb.divsGross : tb.divs));
 
   return (
     <div>
-      <div className="fc-seg" style={{ margin: "0 0 14px" }} role="tablist">
+      <div className="fc-seg" style={{ margin: "0 0 14px" }} role="group" aria-label="Zeitraum">
         {years.slice(-3).map((yy) => (
-          <button key={yy} className={view === yy ? "active" : ""} onClick={() => setView(yy)}>{yy}</button>
+          <button key={yy} type="button" className={view === yy ? "active" : ""} aria-pressed={view === yy} onClick={() => setView(yy)}>{yy}</button>
         ))}
-        <button className={view === "all" ? "active" : ""} onClick={() => setView("all")}>Gesamt</button>
+        <button type="button" className={view === "all" ? "active" : ""} aria-pressed={view === "all"} onClick={() => setView("all")}>Gesamt</button>
       </div>
 
       <div className="fc-perf-total">
@@ -216,7 +217,7 @@ export function PerformanceSheet({ groups, divs = [], splitting, masked, logos =
             {taxUsed > pb
               ? `${M(eur(taxUsed - pb))} über dem Freibetrag.`
               : `Noch ${M(eur(pb - taxUsed))} frei.`}
-            {" "}Vereinfacht: realisierte Aktien/ETF-Gewinne und Ausschüttungen, ohne Teilfreistellung und Vorabpauschale.
+            {" "}Vereinfacht: realisierte Aktien/ETF-Gewinne und Ausschüttungen brutto (inkl. einbehaltener Steuer), ohne Teilfreistellung und Vorabpauschale.
             Krypto und Edelmetalle zählen nicht (§ 23 EStG).{splitting ? " Splitting laut Profil." : ""}
           </div>
         </div>
@@ -236,7 +237,7 @@ export function PerformanceSheet({ groups, divs = [], splitting, masked, logos =
       )}
       <div className="fc-detail-note" style={{ marginTop: 12 }}>
         Verkaufte Positionen bleiben mit ihrem Ergebnis enthalten. Die %-Kurve im Chart ist zeitgewichtet –
-        auch dort zählt die Entwicklung bis zum Verkauf weiter.
+        auch dort zählt die Entwicklung bis zum Verkauf weiter. Immobilien ohne Chart-Häkchen sind ausgeklammert.
       </div>
     </div>
   );

@@ -3,13 +3,22 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContai
 import { RefreshCw } from "lucide-react";
 import { C, SHADOW, MASK, BENCHMARKS, HIST_TYPES, CRYPTO_MAX_DAYS, CRYPTO_IDS, RANGES } from "../lib/constants.jsx";
 import { locale, curSym, eur, eurFull } from "../lib/currency.js";
-import { todayIso, addDays, daysBetween, eachDay, yearStartIso } from "../lib/utils.js";
-import { fifoAt, cashAmount, cashAtDate, propValueAt, histKeyOf } from "../lib/finance.js";
-import { fetchStockHistories, fetchCryptoHistory, fetchFxSeries, fillForward } from "../lib/api.js";
+import { todayIso, addDays, daysBetween, yearStartIso } from "../lib/utils.js";
+import { cashAmount, histKeyOf } from "../lib/finance.js";
+import { fetchStockHistories, fetchCryptoHistory, fetchFxSeries } from "../lib/api.js";
+import { computeSeries, mergeSeries, lastDateOf, firstDateOf } from "../lib/portfolioSeries.js";
 import { Card, Fresh } from "../components/ui.jsx";
 
 /* Letzte berechnete Kurve – überlebt Tab-Wechsel, damit der Chart nicht neu "lädt" */
 const chartCache = { key: "", state: null };
+
+/* Ab wann eine vorhandene Serie nur noch ergänzt wird: sie muss den nötigen Start
+   abdecken. Dann reicht ein Abruf ab dem letzten Tag (minus Puffer für Korrekturen). */
+const MINOR_CCY = ["GBp", "GBX", "ZAc", "ZAC", "ILA", "ILa"];
+const covers = (h, startAll) => !!(h && h.series && lastDateOf(h.series)
+  && !MINOR_CCY.includes(h.ccy) /* alte Pence-Serien einmal komplett neu laden */
+  && (h.from ? h.from <= startAll : firstDateOf(h.series) <= addDays(startAll, 7)));
+const incStart = (h) => addDays(lastDateOf(h.series), -5);
 
 export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks, onToggleBenchmark, range: rangeProp, mode: modeProp, onRange, onMode, masked = false, hist: histProp, histReady = true, onHist }) {
   /* Zeitraum und Darstellung liegen in den Settings, damit die Wahl einen App-Neustart ueberlebt */
@@ -28,27 +37,31 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
   /* Immobilien laufen ohne Kursquelle - sie brauchen nur ein Kaufdatum */
   const propGroups = useMemo(() => groups.filter((g) => g.type === "immobilie" && g.inChart), [groups]);
 
-  const activeBms = BENCHMARKS.filter((b) => benchmarks.includes(b.id));
+  const bmKey = benchmarks.join(",");
+  const activeBms = useMemo(() => BENCHMARKS.filter((b) => bmKey.split(",").includes(b.id)), [bmKey]);
   const eligKey = eligible.map((g) => `${g.gkey}|${g.lots.map((l) => `${l.qty}@${l.buyDate}`).join("+")}|${g.sells.map((s) => `${s.qty}@${s.date}`).join("+")}`).join(",");
   const cashKey = cashGroups.map((g) => `${g.gkey}|${cashAmount(g.ref)}|${g.ref.ccy || cur}|${(g.ref.flows || []).length}`).join(",");
   const propKey = propGroups.map((g) => `${g.gkey}|${g.ref.buyDate}|${g.ref.valMode || "value"}|${g.ref.growth || 0}|${g.ref.price}|${g.ref.buyPrice}`).join(",");
-  const bmKey = benchmarks.join(",");
 
-  /* Stale-while-revalidate: erst sofort aus dem Tages-Cache (auch von gestern) zeichnen,
-     dann im Hintergrund fehlende Serien holen und die Kurve still austauschen.
-     Der Chart verschwindet dabei nie hinter "wird geladen". */
+  /* Stale-while-revalidate: erst sofort aus dem Cache (auch von gestern) zeichnen,
+     dann im Hintergrund fehlende Tage holen und die Kurve still austauschen. */
   const cacheKey = [eligKey, cashKey, propKey, bmKey, cur].join("§");
   const [state, setState] = useState(() => (chartCache.key === cacheKey && chartCache.state) || { loading: true, rows: [], notes: [], err: "" });
   const [refreshing, setRefreshing] = useState(false);
-  const publish = (next) => { chartCache.key = cacheKey; chartCache.state = next; setState(next); };
+
+  /* Neueste Props für den Abruf – der Effekt selbst hängt nur an den Schlüsseln oben */
+  const latest = useRef(null);
+  useEffect(() => { latest.current = { eligible, cashGroups, propGroups, activeBms, histProp, fxRates, onHist }; });
 
   useEffect(() => {
     let cancelled = false;
+    const publish = (next) => { chartCache.key = cacheKey; chartCache.state = next; setState(next); };
     async function build() {
+      const { eligible, cashGroups, propGroups, activeBms, histProp, fxRates, onHist } = latest.current;
       if (!eligible.length && !cashGroups.length && !propGroups.length) { publish({ loading: false, rows: [], notes: [], err: "" }); return; }
       if (!histReady) return; /* IndexedDB noch nicht gelesen – Effekt läuft danach erneut */
       const hist = { ...(histProp || {}) };
-      let histChanged = false;
+      const changed = new Set();
       const today = todayIso();
       const buyDates = [
         ...eligible.flatMap((g) => g.lots.map((l) => l.buyDate).filter(Boolean)),
@@ -70,7 +83,7 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
       for (const n of need) { if (!seen.has(n.key)) { seen.add(n.key); uniq.push(n); } }
       const hasSeries = (key) => !!(hist[key] && hist[key].series);
 
-      /* Wechselkurse: was gebraucht wird, und was davon im Cache liegt */
+      /* Wechselkurse: Kurse, Benchmarks und Cash-Konten in Fremdwährung */
       const fxNeed = () => {
         const set = new Set();
         for (const n of uniq) { const h = hist[n.key]; if (h && h.ccy && h.ccy !== cur) set.add(h.ccy); }
@@ -82,92 +95,7 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
         for (const ccy of fxNeed()) { const h = hist[`fx:${ccy}:${cur}`]; if (h && h.series) out[ccy] = h.series; }
         return out;
       };
-
-      /* --- Kurve aus Serien + Wechselkursen berechnen --- */
-      const compute = (fx) => {
-        const dates = eachDay(startAll, today);
-        const filled = {};
-        for (const n of uniq) {
-          const h = hist[n.key];
-          if (h && h.series) filled[n.key] = fillForward(h.series, dates);
-        }
-        const fxFilled = {};
-        for (const [ccy, s] of Object.entries(fx)) fxFilled[ccy] = fillForward(s, dates);
-
-        /* Zeitgewichtete Rendite über die Wertpapiere: Zu- und Verkäufe verzerren die
-           Kurve nicht, dadurch ist der Vergleich mit den Indizes fair. Cash zählt nur im Wert. */
-        const chartLots = new Map();
-        for (const g of eligible) chartLots.set(g.gkey, g.lots.filter((l) => l.inChart !== false && l.buyDate));
-        const rows = [];
-        const flatNames = new Set();
-        let twr = 100, prev = null;
-        for (const d of dates) {
-          let assets = 0, invested = 0, any = false;
-          const px = {};
-          for (const g of eligible) {
-            const pos = fifoAt(chartLots.get(g.gkey) || [], g.sells, d);
-            if (pos.openQty <= 1e-10) continue;
-            const key = histKeyOf(g, cur);
-            const ser = filled[key];
-            const raw = ser && ser[d];
-            const h = hist[key];
-            /* Ohne Wechselkurs-Historie (noch nicht geladen): heutiger Kurs als Näherung */
-            const rate = raw != null && h && h.ccy && h.ccy !== cur ? ((fxFilled[h.ccy] && fxFilled[h.ccy][d]) ?? (fxRates && fxRates[h.ccy])) : 1;
-            let p;
-            if (raw != null && rate != null) {
-              p = raw * rate;
-              px[g.gkey] = { p, qty: pos.openQty }; /* zaehlt in der Renditekette */
-            } else {
-              /* Keine Kurshistorie (z. B. ohne Twelve-Data-Key): Position mit ihrem
-                 aktuellen Kurs als konstanten Wert mitzaehlen, statt sie stillschweigend
-                 aus dem Chart fallen zu lassen. In die %-Kurve geht sie nicht ein. */
-              if (!(g.price > 0)) continue;
-              p = g.price;
-              flatNames.add(g.name || g.ref.symbol);
-            }
-            assets += pos.openQty * p;
-            invested += pos.openCost;
-            any = true;
-          }
-          /* Cash: heutiger Stand minus alle späteren Zuflüsse, in Anzeigewährung */
-          let cash = 0;
-          for (const g of cashGroups) {
-            const ccy = g.ref.ccy || cur;
-            const r = ccy === cur ? 1 : ((fxFilled[ccy] && fxFilled[ccy][d]) ?? (fxRates && fxRates[ccy]) ?? 1);
-            cash += cashAtDate(g.ref, d) * r;
-          }
-          /* Immobilien: eigener Wertverlauf, ohne Kursquelle. Sie gehen als Pseudo-Position
-             in die Renditekette ein, damit die %-Kurve ihr Wachstum ebenfalls zeigt. */
-          let props = 0;
-          for (const g of propGroups) {
-            if (g.ref.buyDate && g.ref.buyDate > d) continue;
-            const pv = propValueAt(g.ref, d);
-            if (!(pv > 0)) continue;
-            props += pv;
-            px["prop:" + g.gkey] = { p: pv, qty: 1 };
-          }
-          if (!any && cash === 0 && props === 0) continue;
-          if (prev) {
-            let num = 0, den = 0;
-            for (const k of Object.keys(prev.px)) {
-              const a = prev.px[k], b = px[k];
-              if (!a || !b) continue;
-              num += a.qty * b.p;
-              den += a.qty * a.p;
-            }
-            if (den > 0) twr *= num / den;
-          }
-          const row = { d, value: assets + cash + props, assets, cash, props, invested, gain: assets - invested, twr };
-          for (const b of activeBms) {
-            const ser = filled[`td:${b.sym}`];
-            row["bm_" + b.id] = ser && ser[d] != null ? ser[d] : null;
-          }
-          rows.push(row);
-          prev = { d, px };
-        }
-
-        return { rows, flatNames };
-      };
+      const compute = (fx) => computeSeries({ eligible, cashGroups, propGroups, hist, fx, fxRates, cur, start: startAll, end: today, bms: activeBms });
       const finish = (res, notes, stillLoading) => {
         const all = [...notes];
         if (res.flatNames.size) all.push(`Ohne Kurshistorie, mit heutigem Kurs gezählt: ${[...res.flatNames].join(", ")}`);
@@ -179,11 +107,10 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
       for (const n of uniq) {
         if (n.kind === "crypto" && !(n.g.ref.coinId || CRYPTO_IDS[(n.g.ref.symbol || "").toUpperCase()]) && !hasSeries(n.key)) staticNotes.push(`${n.g.name}: keine Krypto-ID`);
       }
-      const staleOf = () => uniq.filter((n) => { const c = hist[n.key]; return !(c && c.fetched === today && c.series); });
-      const stale = staleOf();
+      const stale = uniq.filter((n) => { const c = hist[n.key]; return !(c && c.fetched === today && c.series && covers(c, startAll)); });
       const staleStocks = stale.filter((x) => x.kind === "stock");
       if (staleStocks.length && !tdKey && staleStocks.some((x) => !hasSeries(x.key))) staticNotes.push("Für Kurshistorie von Aktien/ETFs den Twelve-Data-Key in den Einstellungen eintragen");
-      const fxStale = fxNeed().filter((ccy) => { const h = hist[`fx:${ccy}:${cur}`]; return !(h && h.fetched === today); });
+      const fxStale = fxNeed().filter((ccy) => { const h = hist[`fx:${ccy}:${cur}`]; return !(h && h.fetched === today && covers(h, startAll)); });
       const willFetch = stale.some((x) => x.kind === "crypto") || (staleStocks.length > 0 && !!tdKey) || fxStale.length > 0;
 
       /* Phase 1: sofort mit dem, was da ist */
@@ -191,70 +118,87 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
       if (!willFetch) { setRefreshing(false); return; }
       setRefreshing(true);
 
-      /* Phase 2: im Hintergrund nachladen. Netzfehler nur melden, wenn es gar keine
-         (auch keine ältere) Serie gibt – sonst gilt still der letzte Stand. */
+      /* Phase 2: im Hintergrund nachladen – nur die fehlenden Tage, wo möglich.
+         Netzfehler nur melden, wenn es gar keine (auch keine ältere) Serie gibt. */
       const notes = [...staticNotes];
+      /* reqStart: ab wann dieser Abruf lief. Passt eine ergänzende Antwort nicht zur alten
+         Serie (andere Währung), gilt nur ihr eigener Zeitraum – beim nächsten Mal wird dann
+         komplett neu geladen, statt die Historie abgeschnitten stehen zu lassen. */
+      const store = (key, ccy, series, reqStart) => {
+        const old = hist[key];
+        const inc = old && covers(old, startAll) && ccy === (old.ccy || ccy);
+        hist[key] = { fetched: today, ...(ccy ? { ccy } : {}), from: inc ? (old.from || startAll) : reqStart, series: inc ? mergeSeries(old.series, series) : series };
+        changed.add(key);
+      };
       let planBlocked = [], limitHit = false;
       for (const n of stale.filter((x) => x.kind === "crypto")) {
         const coinId = n.g.ref.coinId || CRYPTO_IDS[(n.g.ref.symbol || "").toUpperCase()];
         if (!coinId) continue;
         try {
-          const days = Math.min(CRYPTO_MAX_DAYS, Math.max(2, daysBetween(startAll, today) + 1));
+          const old = hist[n.key];
+          const from = old && covers(old, startAll) ? incStart(old) : startAll;
+          const days = Math.min(CRYPTO_MAX_DAYS, Math.max(2, daysBetween(from, today) + 1));
           const r = await fetchCryptoHistory(coinId, cur, days);
-          hist[n.key] = { fetched: today, ccy: r.ccy, series: r.series };
-          histChanged = true;
+          store(n.key, r.ccy, r.series, from);
           await sleep(400);
         } catch {
           if (!hasSeries(n.key)) notes.push(`${n.g.name}: keine Historie`);
         }
         if (cancelled) return;
       }
-      /* Aktien/ETFs/Benchmarks: Twelve Data – ALLE Symbole in einem Request
-         (Gratis-Tarif: 8 Requests/Min – so reicht einer statt zwölf) */
+      /* Aktien/ETFs/Benchmarks: Twelve Data – mehrere Symbole je Request (Gratis-Tarif:
+         8 Requests/Min). Getrennt nach "nur ergänzen" und "komplett". */
       if (staleStocks.length && tdKey) {
-        const syms = [...new Set(staleStocks.map((x) => x.sym))];
-        for (let i = 0; i < syms.length; i += 8) {
-          const chunk = syms.slice(i, i + 8);
-          try {
-            const res = await fetchStockHistories(chunk, tdKey, startAll);
-            for (const sym of chunk) {
-              const r = res[sym];
-              if (r && r.error === "PLAN") { planBlocked.push(sym); continue; }
-              if (!r || r.error) { if (!hasSeries(`td:${sym}`)) notes.push(`${sym}: keine Historie`); continue; }
-              hist[`td:${sym}`] = { fetched: today, ccy: r.ccy, series: r.series };
-              histChanged = true;
+        const incr = staleStocks.filter((x) => covers(hist[x.key], startAll));
+        const full = staleStocks.filter((x) => !covers(hist[x.key], startAll));
+        const batches = [];
+        if (incr.length) batches.push({ syms: [...new Set(incr.map((x) => x.sym))], start: incr.map((x) => incStart(hist[x.key])).sort()[0] });
+        if (full.length) batches.push({ syms: [...new Set(full.map((x) => x.sym))], start: startAll });
+        outer: for (const b of batches) {
+          for (let i = 0; i < b.syms.length; i += 8) {
+            const chunk = b.syms.slice(i, i + 8);
+            try {
+              const res = await fetchStockHistories(chunk, tdKey, b.start);
+              for (const sym of chunk) {
+                const r = res[sym];
+                if (r && r.error === "PLAN") { planBlocked.push(sym); continue; }
+                if (!r || r.error) { if (!hasSeries(`td:${sym}`)) notes.push(`${sym}: keine Historie`); continue; }
+                store(`td:${sym}`, r.ccy, r.series, b.start);
+              }
+            } catch (e) {
+              if (String(e.message) === "LIMIT") { limitHit = true; break outer; }
+              if (String(e.message) === "PLAN") planBlocked.push(...chunk);
+              else for (const sym of chunk) if (!hasSeries(`td:${sym}`)) notes.push(`${sym}: keine Historie`);
             }
-          } catch (e) {
-            if (String(e.message) === "LIMIT") { limitHit = true; break; }
-            if (String(e.message) === "PLAN") planBlocked.push(...chunk);
-            else for (const sym of chunk) if (!hasSeries(`td:${sym}`)) notes.push(`${sym}: keine Historie`);
+            if (cancelled) return;
+            await sleep(900);
           }
-          if (cancelled) return;
-          if (i + 8 < syms.length) await sleep(900);
         }
       }
       if (planBlocked.length) notes.push(`Nicht im Gratis-Tarif: ${[...new Set(planBlocked)].join(", ")}`);
       if (limitHit && staleStocks.some((x) => !hasSeries(x.key))) notes.push("Datenlimit erreicht – später erneut öffnen");
       if (cancelled) return;
 
-      /* --- Wechselkurse für Fremdwährungen (Kurse und Cash-Konten) --- */
+      /* --- Wechselkurse (nach den Kursen: erst dann ist jede Serien-Währung bekannt) --- */
       const fx = cachedFx();
       for (const ccy of fxNeed()) {
         const fxKey = `fx:${ccy}:${cur}`;
-        if (hist[fxKey] && hist[fxKey].fetched === today) continue;
+        const old = hist[fxKey];
+        if (old && old.fetched === today && covers(old, startAll)) continue;
         try {
-          const s2 = await fetchFxSeries(ccy, cur, startAll);
-          if (s2) { fx[ccy] = s2; hist[fxKey] = { fetched: today, series: s2 }; histChanged = true; }
+          const from = old && covers(old, startAll) ? incStart(old) : startAll;
+          const s2 = await fetchFxSeries(ccy, cur, from);
+          if (s2) { store(fxKey, "", s2, from); fx[ccy] = hist[fxKey].series; }
         } catch { if (!fx[ccy]) notes.push(`Wechselkurs ${ccy}→${cur} nicht verfügbar`); }
       }
       if (cancelled) return;
-      if (histChanged && onHist) onHist(hist);
+      if (changed.size && onHist) onHist(hist, [...changed]);
       finish(compute(fx), notes, false);
       setRefreshing(false);
     }
     build();
     return () => { cancelled = true; };
-  }, [eligKey, cashKey, propKey, bmKey, cur, tdKey, histReady]);
+  }, [cacheKey, eligKey, cashKey, propKey, bmKey, cur, tdKey, histReady]);
 
   /* --- Zeitraum zuschneiden, Benchmarks auf Startpunkt normalisieren --- */
   const view = useMemo(() => {
@@ -281,7 +225,7 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
     /* für flüssiges Rendern ausdünnen */
     if (out.length > 400) { const step = Math.ceil(out.length / 400); out = out.filter((_, idx) => idx % step === 0 || idx === out.length - 1); }
     return { rows: out, first, last };
-  }, [state.rows, range, bmKey]);
+  }, [state.rows, range, activeBms]);
 
   /* Die Darstellung haengt nur noch am Umschalter. Vergleichsindizes werden
      ausschliesslich in der %-Ansicht gezeichnet, blockieren den Wechsel aber nicht. */
@@ -415,6 +359,9 @@ export default function PortfolioChart({ groups, cur, tdKey, fxRates, benchmarks
 
       {!showPerf && activeBms.length > 0 && (
         <div className="fc-chart-note">Vergleichsindizes werden in der %-Ansicht angezeigt.</div>
+      )}
+      {showBms && cur !== "USD" && (
+        <div className="fc-chart-note">Indizes in {cur} umgerechnet – wie dein Depot, inklusive Währungseffekt.</div>
       )}
 
       {state.notes.length > 0 && (

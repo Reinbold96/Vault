@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.8.0 – 2026-09-30
+
+### Investments
+- **Sparpläne:** für jede Aktie, jeden ETF, Krypto oder Rohstoff einrichtbar (Betrag, Intervall von monatlich bis jährlich, erste Ausführung, optional Gebühr und Enddatum) – oder direkt beim Anlegen einer neuen Position („Einmalkauf | Sparplan“). Jede Ausführung wird als eigener Kauf mit dem Kurs des Tages gebucht; verpasste Termine trägt die App beim nächsten Öffnen nach. Liegt kein historischer Kurs vor, wird der aktuelle genommen und der Kauf als „Kurs geschätzt“ markiert – sobald die Kurshistorie da ist, rechnet die App ihn nach. In der Position: Sparplan-Karte mit nächster Ausführung, Anzahl Ausführungen und Ø Kaufkurs, Pausieren/Fortsetzen, Bearbeiten, Löschen (Käufe bleiben). In der Liste steht ein „Sparplan“-Hinweis; Pläne einer neuen Position erscheinen bis zur ersten Ausführung unter „Wartende Sparpläne“. Mehrere Sparpläne je Position sind möglich.
+- **CSV-Import** von Trade Republic („Transaktionsexport“), Scalable Capital und anderen Brokern (Spalten wie Datum, Typ, ISIN, Stück, Kurs, Betrag). Vorschau mit Käufen, Verkäufen, Ausschüttungen, übersprungenen Zeilen und Dubletten; Spalten lassen sich prüfen und umstellen; zu neuen ISINs wird der Ticker automatisch gesucht. Gebühren fliessen in den Kaufkurs, Steuern auf Ausschüttungen werden gemerkt. Bereits vorhandene Buchungen werden erkannt, geschätzte Sparplan-Käufe durch die echten Ausführungen ersetzt. Optional: Erlöse und Ausschüttungen aufs Cash-Konto. Mit Rückgängig.
+- **Aufteilung** (Art, Währung, Region) als Balken mit Liste unter dem Chart, dazu der **Anteil** jeder Position in der Liste. Regionen: Einzelaktien nach Firmensitz (ISIN), ETFs nach Indexname, beides in der Position überschreibbar.
+- **Position bearbeiten:** Name, Kennung (Ticker ↔ ISIN ↔ WKN), Börse, Region, Logo und Chart-Häkchen für alle Käufe auf einmal. Verkäufe, Ausschüttungen und Sparplan ziehen bei neuer Kennung mit; der Kurs wird sofort neu geholt.
+- **Verkäufe bearbeiten:** antippen, Menge/Kurs/Datum ändern – die Buchung auf dem Cash-Konto passt sich an.
+- **Vergleichsindizes in deiner Währung:** S&P 500, Nasdaq, World und DAX werden taggenau in EUR/CHF umgerechnet – der Vergleich enthält jetzt denselben Währungseffekt wie dein Depot.
+- Immobilien ohne Häkchen „Im Verlaufs-Chart und in der Performance berücksichtigen“ zählen nicht mehr zur Performance (und nicht zur Aufteilung) – z. B. das selbst bewohnte Eigenheim. Zum Vermögen zählen sie weiter.
+
+### Behoben
+- Beim Öffnen eines Eintrags (Kosten, Einnahmen, Positionen …) springt die Tastatur nicht mehr auf: kein Feld wird automatisch ausgewählt – überall in der App.
+- Das Häkchen am Ende eines Formulars (z. B. „Im Verlaufs-Chart anzeigen“ bei Immobilien) war vom Übergang über dem Speichern-Button halb verdeckt. Der Übergang erscheint jetzt nur noch, solange darunter weiterer Inhalt folgt.
+- Maskierte Beträge bleiben auch in Positions-, Verkaufs- und Cash-Details verborgen.
+- **Währungswechsel** rechnet jetzt um: Die App fragt beim Umstellen, ob Kaufkurse, Verkäufe, Ausschüttungen, Kredite, Sparziele und Sparpläne zum aktuellen Kurs umgerechnet werden sollen (Renditen bleiben gleich). Einnahmen, Kosten und Cash-Konten behalten ihre bisherige Währung und werden live umgerechnet. Mit Rückgängig.
+- Ausschüttungen: optional die **einbehaltene Steuer** erfassen – der Sparerpauschbetrag zählt die Ausschüttung dann brutto.
+- Kurse in Pence (London, „GBp“) sowie Rand-Cent und Agorot werden korrekt in die Hauptwährung umgerechnet.
+- Backups enthalten die API-Keys nur noch, wenn das Häkchen gesetzt ist (Standard: aus).
+
+### Technik
+- App.jsx aufgeräumt: Kursabruf (lib/prices.js), Buchungen inkl. Cash-Konto (lib/booking.js), Vermögensverlauf (lib/wealth.js) und Chart-Berechnung (lib/portfolioSeries.js) sind eigene, getestete Module; 127 Tests.
+- Vermögensverlauf wird nur noch bei geänderten Daten berechnet, nicht bei jedem Tastendruck; die Chart-Berechnung nutzt eine FIFO-Zeitleiste statt FIFO pro Tag und Position.
+- Die Chart-Bibliothek liegt nicht mehr auf dem Startpfad: Zahlen und Listen erscheinen sofort, Diagramme laden einen Moment später.
+- Kurshistorie wird täglich nur noch ergänzt statt komplett neu geladen und je Serie gespeichert (statt als ein grosser Block).
+- Fehlergrenzen: Fällt ein nachgeladener Baustein aus (z. B. offline), zeigt nur dieser Bereich einen Hinweis; bei einem schweren Fehler gibt es „Neu laden“ und „Backup sichern“ statt einer weissen Seite.
+- Barrierefreiheit: Umschalter mit aria-pressed, Tab-Leiste mit aria-current, Käufe/Verkäufe als echte Buttons; Sheets setzen den Fokus nicht mehr bei jedem Render zurück. Keine Lint-Warnungen mehr.
+
 ## 1.7.0 – 2026-09-29
 
 ### Aktien und ETFs per ISIN oder WKN

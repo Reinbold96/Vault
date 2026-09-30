@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef } from "react";
-import { Check, Pencil, Trash2, ArrowDownLeft, ArrowUpRight, Percent } from "lucide-react";
+import { Check, Pencil, Trash2, ArrowDownLeft, ArrowUpRight, Percent, CalendarClock, Pause, Play, SlidersHorizontal } from "lucide-react";
 import {
   C, INCOME_TYPES, INVEST_TYPES, COMMODITIES, VALUE_TYPES, EXPENSE_CATS, VARIABLE_CATS, SAVE_CAT,
   KNOWN_ASSETS, CURRENCIES, CREDIT_KINDS, INTERVALS,
@@ -8,8 +8,11 @@ import { getCur, curSym, eur, eurFull, money, fmtQty, fmtDay } from "../lib/curr
 import { todayIso, addDays } from "../lib/utils.js";
 import { payoffPlan, monthsUntil, monthsLabel, fifo, cashAmount, propValueAt, creditKindOf, monthlyIn, fxOf } from "../lib/finance.js";
 import { NOTICE_UNITS, RENEWALS, RENEWAL_IDS, REMIND_DAYS, contractStatus, localTodayIso, statusLabel, cancelEndFor } from "../lib/contracts.js";
-import { Btn, Field, NumInput, Sub } from "./ui.jsx";
+import { Btn, Field, NumInput, Sub, CheckRow } from "./ui.jsx";
 import { ID_MODES, isValidIsin, isValidWkn, detectIdType, idProblem, resolveSecurity, isUsMic } from "../lib/identifiers.js";
+import { REGIONS, regionOf } from "../lib/allocation.js";
+import { PLAN_INTERVALS, planInterval, planDates, nextPlanDate, planStats } from "../lib/plans.js";
+import { MASK } from "../lib/constants.jsx";
 
 /* ---------- Formulare ---------- */
 /* Betrag mit eigener Währung (EUR/USD/CHF) – umgerechnet wird in der Anzeigewährung */
@@ -310,8 +313,17 @@ export function CreditForm({ initial, onSave }) {
   );
 }
 
-export function InvestForm({ initial, onSave, finnhubKey }) {
+/* mode "lot": Kauf erfassen/bearbeiten · "position": Stammdaten einer ganzen Position
+   (Name, Kennung, Region) – ohne Stückzahl und Kurse.
+   Neue Wertpapiere lassen sich statt als Einmalkauf direkt als Sparplan anlegen. */
+export function InvestForm({ initial, onSave, onSavePlan, finnhubKey, mode = "lot" }) {
+  const isPosition = mode === "position";
   const [f, setF] = useState(initial || { name: "", symbol: "", type: "etf", qty: "", buyPrice: "", price: "", logoUrl: "", buyDate: "", inChart: true });
+  /* Einmalkauf oder Sparplan – nur bei ganz neuen Positionen */
+  const canPlan = !initial && !!onSavePlan;
+  const [buyMode, setBuyMode] = useState("once");
+  const today = localTodayIso();
+  const [pf, setPf] = useState({ amount: "", fee: "", interval: "monatlich", start: today, end: "" });
   const [looking, setLooking] = useState(false);
   const [lookupMsg, setLookupMsg] = useState("");
   /* Kennung: Ticker (Standard) oder ISIN/WKN – nur für Aktien und ETFs */
@@ -430,9 +442,15 @@ export function InvestForm({ initial, onSave, finnhubKey }) {
     <div className="fc-form">
       <Field label="Typ">
         <select value={f.type} onChange={(e) => { const t = e.target.value; setF((p) => ({ ...p, type: t, ...(t === "rohstoff" && !p.commodity ? { commodity: "gold", name: "Gold", unit: "Unzen", symbol: "gold" } : {}) })); }}>
-          {INVEST_TYPES.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+          {INVEST_TYPES.filter((t) => !isPosition || ["aktie", "etf", "krypto"].includes(t.id)).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
         </select>
       </Field>
+      {canPlan && ["aktie", "etf", "krypto"].includes(f.type) && (
+        <div className="fc-pills" role="group" aria-label="Kaufart">
+          <button type="button" className={buyMode === "once" ? "on" : ""} aria-pressed={buyMode === "once"} onClick={() => setBuyMode("once")}>Einmalkauf</button>
+          <button type="button" className={buyMode === "plan" ? "on" : ""} aria-pressed={buyMode === "plan"} onClick={() => setBuyMode("plan")}>Sparplan</button>
+        </div>
+      )}
 
       {f.type === "rohstoff" ? (
         <>
@@ -523,10 +541,14 @@ export function InvestForm({ initial, onSave, finnhubKey }) {
               Der Betrag wird mit dem aktuellen Wechselkurs in {getCur()} umgerechnet.
             </div>
           )}
-          <button type="button" className="fc-check" onClick={() => setF({ ...f, inChart: f.inChart === false })}>
-            <span className={`box ${f.inChart !== false ? "on" : ""}`}>{f.inChart !== false && <Check size={13} strokeWidth={3} />}</span>
-            <span>Im Verlaufs-Chart anzeigen</span>
-          </button>
+          <CheckRow on={f.inChart !== false} onToggle={() => setF({ ...f, inChart: f.inChart === false })}>
+            {f.type === "immobilie" ? "Im Verlaufs-Chart und in der Performance berücksichtigen" : "Im Verlaufs-Chart anzeigen"}
+          </CheckRow>
+          {f.type === "immobilie" && f.inChart === false && (
+            <div className="fc-detail-note" style={{ margin: "-6px 0 14px" }}>
+              Zählt weiter zum Vermögen, aber nicht zu Kursverlauf und Performance – z. B. für das selbst bewohnte Eigenheim.
+            </div>
+          )}
           <Btn
             disabled={!f.name || (f.type === "immobilie" ? (f.valMode === "rate" ? !f.buyPrice : !f.price) : !f.price)}
             onClick={() => {
@@ -572,7 +594,6 @@ export function InvestForm({ initial, onSave, finnhubKey }) {
                 onChange={(e) => setF({ ...f, symbol: e.target.value.toUpperCase(), name: "", isin: "", wkn: "", mic: "", exchange: "", idType: "ticker" })}
                 onBlur={lookup}
                 placeholder={ID_MODES[0].ph}
-                autoFocus={!initial}
               />
             </Field>
           ) : (
@@ -595,7 +616,6 @@ export function InvestForm({ initial, onSave, finnhubKey }) {
                   }}
                   onBlur={() => { if (res === null) resolveId(idMode, idVal); }}
                   placeholder={(ID_MODES.find((m) => m.id === idMode) || {}).ph}
-                  autoFocus={!initial}
                 />
               </Field>
               {idProblem(idMode, idVal) && <div className="fc-idhint err">{idProblem(idMode, idVal)}</div>}
@@ -645,33 +665,87 @@ export function InvestForm({ initial, onSave, finnhubKey }) {
             />
           </Field>
           {lookupMsg && <div style={{ margin: "-6px 0 12px", fontSize: 13, color: C.error }}>{lookupMsg}</div>}
-          <div className="fc-row2">
-            <Field label="Anzahl">
-              <NumInput value={f.qty} onChange={(v) => setF({ ...f, qty: v })} placeholder="0" />
-            </Field>
-            <Field label={`Kaufkurs (${curSym()})`}>
-              <NumInput value={f.buyPrice} onChange={(v) => setF({ ...f, buyPrice: v })} placeholder="0" />
-            </Field>
-          </div>
-          <div className="fc-row2">
-            <Field label="Kaufdatum">
-              <input type="date" value={f.buyDate || ""} onChange={(e) => setF({ ...f, buyDate: e.target.value })} />
-            </Field>
-            <Field label={`Aktueller Kurs (${curSym()})`}>
-              <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
-            </Field>
-          </div>
-          <Field label="Logo-URL (optional)">
-            <input value={f.logoUrl || ""} onChange={(e) => setF({ ...f, logoUrl: e.target.value })} placeholder="https://…" />
-          </Field>
-          <button type="button" className="fc-check" onClick={() => setF({ ...f, inChart: f.inChart === false })}>
-            <span className={`box ${f.inChart !== false ? "on" : ""}`}>{f.inChart !== false && <Check size={13} strokeWidth={3} />}</span>
-            <span>Im Verlaufs-Chart anzeigen</span>
-          </button>
-          <Btn
-            disabled={!saveSym || !f.qty || looking}
-            onClick={() => onSave(withIds({ ...f, name: f.name || saveSym, symbol: saveSym, qty: Number(f.qty), buyPrice: Number(f.buyPrice) || 0, price: Number(f.price) || Number(f.buyPrice) || 0 }))}
-          >Speichern</Btn>
+          {isPosition ? (
+            <>
+              {idCapable && (() => {
+                const auto = regionOf({ type: f.type, name: f.name, ref: { isin: f.isin }, lots: [] });
+                const autoLabel = auto.id ? (REGIONS.find((r) => r.id === auto.id) || {}).label : "nicht erkannt";
+                return (
+                  <Field label="Region (für die Aufteilung)">
+                    <select value={f.region || ""} onChange={(e) => setF({ ...f, region: e.target.value })}>
+                      <option value="">Automatisch – {autoLabel}</option>
+                      {REGIONS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                    </select>
+                  </Field>
+                );
+              })()}
+              <Field label="Logo-URL (optional)">
+                <input value={f.logoUrl || ""} onChange={(e) => setF({ ...f, logoUrl: e.target.value })} placeholder="https://…" />
+              </Field>
+              <CheckRow on={f.inChart !== false} onToggle={() => setF({ ...f, inChart: f.inChart === false })}>Im Verlaufs-Chart anzeigen</CheckRow>
+              <div className="fc-detail-note" style={{ margin: "-6px 0 14px" }}>
+                Gilt für alle Käufe dieser Position. Mit neuer Kennung holt die App den Kurs beim Speichern neu.
+              </div>
+              <Btn
+                disabled={!saveSym || looking}
+                onClick={() => {
+                  const ids = withIds({ ...f, symbol: saveSym });
+                  const patch = { type: f.type, name: f.name || saveSym, symbol: saveSym, logoUrl: f.logoUrl || "", region: idCapable ? f.region || "" : "" };
+                  for (const k of ["isin", "wkn", "idType", "mic", "exchange"]) patch[k] = ids[k] || "";
+                  if ((f.inChart !== false) !== (initial.inChart !== false)) patch.inChart = f.inChart !== false;
+                  onSave(patch);
+                }}
+              >Position speichern</Btn>
+            </>
+          ) : canPlan && buyMode === "plan" ? (
+            <>
+              <PlanFields f={pf} setF={setPf} today={today} name={f.name || saveSym} existing={false} />
+              <Field label={`Aktueller Kurs (${curSym()}, optional)`}>
+                <NumInput value={pf.px} onChange={(v) => setPf({ ...pf, px: v })} placeholder="wird abgerufen" />
+              </Field>
+              {pf.start > today && (
+                <div className="fc-detail-note" style={{ margin: "-6px 0 14px" }}>Die Position erscheint mit der ersten Ausführung am {fmtDay(pf.start)}.</div>
+              )}
+              <Btn
+                disabled={!saveSym || looking || !(Number(pf.amount) > 0) || !pf.start}
+                onClick={() => onSavePlan({
+                  tpl: withIds({ ...f, name: f.name || saveSym, symbol: saveSym }),
+                  amount: Number(pf.amount), fee: Number(pf.fee) || 0, interval: pf.interval, start: pf.start, end: pf.end || "", px: Number(pf.px) || 0,
+                })}
+              >Sparplan anlegen</Btn>
+            </>
+          ) : (
+            <>
+              <div className="fc-row2">
+                <Field label="Anzahl">
+                  <NumInput value={f.qty} onChange={(v) => setF({ ...f, qty: v })} placeholder="0" />
+                </Field>
+                <Field label={`Kaufkurs (${curSym()})`}>
+                  <NumInput value={f.buyPrice} onChange={(v) => setF({ ...f, buyPrice: v })} placeholder="0" />
+                </Field>
+              </div>
+              <div className="fc-row2">
+                <Field label="Kaufdatum">
+                  <input type="date" value={f.buyDate || ""} onChange={(e) => setF({ ...f, buyDate: e.target.value })} />
+                </Field>
+                <Field label={`Aktueller Kurs (${curSym()})`}>
+                  <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
+                </Field>
+              </div>
+              <Field label="Logo-URL (optional)">
+                <input value={f.logoUrl || ""} onChange={(e) => setF({ ...f, logoUrl: e.target.value })} placeholder="https://…" />
+              </Field>
+              <CheckRow on={f.inChart !== false} onToggle={() => setF({ ...f, inChart: f.inChart === false })}>Im Verlaufs-Chart anzeigen</CheckRow>
+              <Btn
+                disabled={!saveSym || !f.qty || looking}
+                onClick={() => {
+                  /* "Kurs geschätzt" entfällt, sobald jemand den Kauf von Hand prüft */
+                  const { est: _est, ...rest } = f;
+                  onSave(withIds({ ...rest, name: f.name || saveSym, symbol: saveSym, qty: Number(f.qty), buyPrice: Number(f.buyPrice) || 0, price: Number(f.price) || Number(f.buyPrice) || 0 }));
+                }}
+              >Speichern</Btn>
+            </>
+          )}
         </>
       )}
     </div>
@@ -753,7 +827,7 @@ export function GoalForm({ initial, onSave }) {
   return (
     <div className="fc-form">
       <Field label="Bezeichnung">
-        <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="z. B. Notgroschen" autoFocus={!initial} />
+        <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="z. B. Notgroschen" />
       </Field>
       <div className="fc-row2">
         <Field label={`Zielbetrag (${curSym()})`}>
@@ -779,7 +853,7 @@ export function AmountForm({ label, hint, cta, onSave, initialDate = true }) {
       {hint && <div className="fc-detail-note" style={{ marginBottom: 14 }}>{hint}</div>}
       <div className="fc-row2">
         <Field label={label}>
-          <NumInput value={f.amt} onChange={(v) => setF({ ...f, amt: v })} autoFocus />
+          <NumInput value={f.amt} onChange={(v) => setF({ ...f, amt: v })} />
         </Field>
         {initialDate && (
           <Field label="Datum">
@@ -792,42 +866,51 @@ export function AmountForm({ label, hint, cta, onSave, initialDate = true }) {
   );
 }
 
-/* ---------- Dividende / Zinsertrag ---------- */
+/* ---------- Dividende / Zinsertrag ----------
+   Erfasst wird die Gutschrift (nach Steuern). Die einbehaltene Steuer ist optional –
+   mit ihr zählt der Pauschbetrag die Ausschüttung brutto, wie das Finanzamt. */
 export function DivForm({ group, onSave }) {
-  const [f, setF] = useState({ amt: "", date: todayIso(), toCash: true });
+  const [f, setF] = useState({ amt: "", tax: "", date: todayIso(), toCash: true });
   const amt = Number(f.amt) || 0;
+  const tax = Number(f.tax) || 0;
   return (
     <div className="fc-form">
       <div className="fc-detail-note" style={{ marginBottom: 14 }}>
-        Bestand: <b>{fmtQty(group.qty)} {group.type === "rohstoff" ? (group.ref.unit || "Einheiten") : "Stück"}</b> – erfasse den erhaltenen Betrag nach Steuern.
+        Bestand: <b>{fmtQty(group.qty)} {group.type === "rohstoff" ? (group.ref.unit || "Einheiten") : "Stück"}</b> – erfasse den Betrag, der gutgeschrieben wurde.
       </div>
       <div className="fc-row2">
-        <Field label={`Betrag (${curSym()})`}>
-          <NumInput value={f.amt} onChange={(v) => setF({ ...f, amt: v })} autoFocus />
+        <Field label={`Gutschrift (${curSym()})`}>
+          <NumInput value={f.amt} onChange={(v) => setF({ ...f, amt: v })} />
         </Field>
         <Field label="Datum">
           <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
         </Field>
       </div>
-      <button type="button" className="fc-check" onClick={() => setF({ ...f, toCash: !f.toCash })}>
-        <span className={`box ${f.toCash ? "on" : ""}`}>{f.toCash && <Check size={13} strokeWidth={3} />}</span>
-        <span>Auf das Cash-Konto buchen</span>
-      </button>
-      <Btn disabled={!amt} onClick={() => onSave(f)}>Ausschüttung buchen</Btn>
+      <Field label={`Davon einbehaltene Steuer (${curSym()}, optional)`}>
+        <NumInput value={f.tax} onChange={(v) => setF({ ...f, tax: v })} placeholder="0" />
+      </Field>
+      {amt > 0 && tax > 0 && (
+        <div className="fc-detail-note" style={{ margin: "-6px 0 14px" }}>
+          Brutto {eurFull(amt + tax)} – zählt so für den Sparerpauschbetrag. In der Performance zählt die Gutschrift.
+        </div>
+      )}
+      <CheckRow on={f.toCash} onToggle={() => setF({ ...f, toCash: !f.toCash })}>Auf das Cash-Konto buchen</CheckRow>
+      <Btn disabled={!amt} onClick={() => onSave({ amt, tax, date: f.date || todayIso(), toCash: f.toCash })}>Ausschüttung buchen</Btn>
     </div>
   );
 }
 
 /* ---------- Cash-Konto: Bewegungen ---------- */
-export function CashDetail({ inv, fxRates, onIn, onOut, onEdit, onDeleteFlow }) {
+export function CashDetail({ inv, fxRates, onIn, onOut, onEdit, onDeleteFlow, masked = false }) {
+  const M = (v) => (masked ? MASK : v);
   const ccy = inv.ccy || getCur();
   const amt = cashAmount(inv);
   const flows = [...(inv.flows || [])].sort((a, b) => (b.d || "").localeCompare(a.d || ""));
   return (
     <div>
       <div className="fc-detail-kpis">
-        <div><span className="l">Bestand</span><span className="v">{money(amt, ccy)}</span></div>
-        {ccy !== getCur() && <div><span className="l">In {getCur()}</span><span className="v">{eur(amt * (fxRates[ccy] || 1))}</span></div>}
+        <div><span className="l">Bestand</span><span className="v">{M(money(amt, ccy))}</span></div>
+        {ccy !== getCur() && <div><span className="l">In {getCur()}</span><span className="v">{M(eur(amt * (fxRates[ccy] || 1)))}</span></div>}
         <div><span className="l">Währung</span><span className="v">{ccy}</span></div>
         <div><span className="l">Buchungen</span><span className="v">{flows.length}</span></div>
       </div>
@@ -839,7 +922,7 @@ export function CashDetail({ inv, fxRates, onIn, onOut, onEdit, onDeleteFlow }) 
             <div className="fc-detail-row" key={f.id}>
               <div className="m">
                 <div className="t" style={{ color: (Number(f.amt) || 0) >= 0 ? C.positive : C.ink }}>
-                  {(Number(f.amt) || 0) >= 0 ? "+" : "−"}{money(Math.abs(Number(f.amt) || 0), ccy)}
+                  {M(`${(Number(f.amt) || 0) >= 0 ? "+" : "−"}${money(Math.abs(Number(f.amt) || 0), ccy)}`)}
                 </div>
                 <div className="s"><Sub parts={[fmtDay(f.d), f.label || "Verkaufserlös"]} /></div>
               </div>
@@ -879,7 +962,7 @@ export function ExtraPaymentForm({ credit, onSave, cashAvail = 0 }) {
       </div>
       <div className="fc-row2">
         <Field label={`Betrag (${curSym()})`}>
-          <NumInput value={f.amt} onChange={(v) => setF({ ...f, amt: v })} placeholder="0" autoFocus />
+          <NumInput value={f.amt} onChange={(v) => setF({ ...f, amt: v })} placeholder="0" />
         </Field>
         <Field label="Datum">
           <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
@@ -972,29 +1055,35 @@ export function CreditDetail({ credit, onExtra, onDeleteExtra, onEdit, onPlan })
   );
 }
 
-/* ---------- Verkaufen ---------- */
-export function SellForm({ group, onSave }) {
+/* ---------- Verkaufen / Verkauf bearbeiten ---------- */
+export function SellForm({ group, onSave, initial = null, masked = false }) {
+  const M = (v) => (masked ? MASK : v);
   const unit = group.type === "rohstoff" ? (group.ref.unit || "Einheiten") : "Stück";
-  const [f, setF] = useState({ qty: "", price: group.price ? String(group.price) : "", date: todayIso() });
+  const [f, setF] = useState(initial
+    ? { qty: String(initial.qty), price: String(initial.price), date: initial.date || todayIso() }
+    : { qty: "", price: group.price ? String(group.price) : "", date: todayIso() });
   const qty = Number(f.qty) || 0;
   const price = Number(f.price) || 0;
-  const tooMuch = qty > group.qty + 1e-9;
+  /* beim Bearbeiten ist die alte Menge wieder verfügbar */
+  const avail = group.qty + (initial ? Number(initial.qty) || 0 : 0);
+  const tooMuch = qty > avail + 1e-9;
   /* Vorschau: welcher Gewinn wird nach FIFO realisiert? */
   const preview = useMemo(() => {
     if (!qty || !price) return null;
-    const f2 = fifo(group.lots, [...group.sells, { id: "_p", qty, price, date: f.date || todayIso() }]);
+    const others = group.sells.filter((s) => !initial || s.id !== initial.id);
+    const f2 = fifo(group.lots, [...others, { id: "_p", qty, price, date: f.date || todayIso() }]);
     const m = f2.matches.find((x) => x.id === "_p");
     return m ? m.realized : null;
-  }, [qty, price, f.date, group]);
+  }, [qty, price, f.date, group, initial]);
 
   return (
     <div className="fc-form">
       <div className="fc-detail-note" style={{ marginBottom: 14 }}>
-        Verfügbar: <b>{fmtQty(group.qty)} {unit}</b> · Ø Kaufkurs {eurFull(group.avgBuy)}
+        Verfügbar: <b>{fmtQty(avail)} {unit}</b> · Ø Kaufkurs {M(eurFull(group.avgBuy))}
       </div>
       <div className="fc-row2">
         <Field label={`Menge (${unit})`}>
-          <NumInput value={f.qty} onChange={(v) => setF({ ...f, qty: v })} placeholder="0" autoFocus />
+          <NumInput value={f.qty} onChange={(v) => setF({ ...f, qty: v })} placeholder="0" />
         </Field>
         <Field label={`Verkaufskurs (${curSym()})`}>
           <NumInput value={f.price} onChange={(v) => setF({ ...f, price: v })} placeholder="0" />
@@ -1003,21 +1092,92 @@ export function SellForm({ group, onSave }) {
       <Field label="Verkaufsdatum">
         <input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} />
       </Field>
-      <button type="button" className="fc-mini" onClick={() => setF({ ...f, qty: String(group.qty) })}>Alles verkaufen</button>
-      {tooMuch && <div style={{ margin: "0 0 12px", fontSize: 13, color: C.error }}>Mehr als der Bestand ({fmtQty(group.qty)} {unit}) lässt sich nicht verkaufen.</div>}
+      <button type="button" className="fc-mini" onClick={() => setF({ ...f, qty: String(avail) })}>{initial ? "Ganzen Bestand" : "Alles verkaufen"}</button>
+      {tooMuch && <div style={{ margin: "0 0 12px", fontSize: 13, color: C.error }}>Mehr als der Bestand ({fmtQty(avail)} {unit}) lässt sich nicht verkaufen.</div>}
       {!tooMuch && qty > 0 && price > 0 && (
         <div className="fc-detail-note" style={{ marginBottom: 14 }}>
-          Erlös <b>{eurFull(qty * price)}</b> wird deinem Cash-Konto in {getCur()} zugebucht.
-          {preview != null && <> Realisierter Gewinn nach FIFO: <b style={{ color: preview >= 0 ? C.positive : C.error }}>{preview >= 0 ? "+" : ""}{eurFull(preview)}</b>.</>}
+          {initial
+            ? <>Erlös <b>{M(eurFull(qty * price))}</b> – die Buchung auf dem Cash-Konto wird angepasst.</>
+            : <>Erlös <b>{M(eurFull(qty * price))}</b> wird deinem Cash-Konto in {getCur()} zugebucht.</>}
+          {preview != null && <> Realisierter Gewinn nach FIFO: <b style={{ color: preview >= 0 ? C.positive : C.error }}>{M(`${preview >= 0 ? "+" : ""}${eurFull(preview)}`)}</b>.</>}
         </div>
       )}
-      <Btn disabled={!qty || !price || tooMuch} onClick={() => onSave({ qty, price, date: f.date || todayIso() })}>Verkauf buchen</Btn>
+      <Btn disabled={!qty || !price || tooMuch} onClick={() => onSave({ qty, price, date: f.date || todayIso() })}>{initial ? "Verkauf speichern" : "Verkauf buchen"}</Btn>
     </div>
   );
 }
 
+/* ---------- Sparplan ---------- */
+export function PlanForm({ initial, group, onSave, onDelete }) {
+  const today = localTodayIso();
+  const [f, setF] = useState(() => initial
+    ? { amount: String(initial.amount), fee: initial.fee ? String(initial.fee) : "", interval: initial.interval, start: initial.start, end: initial.end || "", px: initial.px ? String(initial.px) : "" }
+    : { amount: "", fee: "", interval: "monatlich", start: nextFirst(today), end: "", px: "" });
+  return (
+    <div className="fc-form">
+      <PlanFields f={f} setF={setF} today={today} name={group ? group.name : initial ? initial.tpl.name || initial.tpl.symbol : ""} existing={!!initial} lastRun={initial && initial.lastRun} />
+      {!group && (
+        <Field label={`Aktueller Kurs (${curSym()})`}>
+          <NumInput value={f.px} onChange={(v) => setF({ ...f, px: v })} placeholder="für die erste Ausführung" />
+        </Field>
+      )}
+      <Btn disabled={!(Number(f.amount) > 0) || !f.start} onClick={() => onSave({ amount: Number(f.amount), fee: Number(f.fee) || 0, interval: f.interval, start: f.start, end: f.end || "", ...(!group && Number(f.px) > 0 ? { px: Number(f.px) } : {}) })}>
+        {initial ? "Sparplan speichern" : "Sparplan anlegen"}
+      </Btn>
+      {initial && onDelete && (
+        <button type="button" className="fc-mini danger" style={{ marginTop: 12 }} onClick={onDelete}>Sparplan löschen – bisherige Käufe bleiben</button>
+      )}
+    </div>
+  );
+}
+
+/* Nächster Monatserster (Standard-Termin für neue Sparpläne) */
+function nextFirst(today) {
+  const [y, m, d] = today.split("-").map(Number);
+  if (d === 1) return today;
+  const idx = y * 12 + m; /* m ist 1-basiert → nächster Monat */
+  return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, "0")}-01`;
+}
+
+function PlanFields({ f, setF, today, name, existing, lastRun }) {
+  const amount = Number(f.amount) || 0;
+  const fee = Number(f.fee) || 0;
+  const past = f.start ? planDates({ start: f.start, interval: f.interval, end: f.end }, today).filter((d) => !lastRun || d > lastRun) : [];
+  return (
+    <>
+      <div className="fc-row2">
+        <Field label={`Betrag (${curSym()})`}>
+          <NumInput value={f.amount} onChange={(v) => setF({ ...f, amount: v })} placeholder="z. B. 100" />
+        </Field>
+        <Field label="Intervall">
+          <select value={f.interval} onChange={(e) => setF({ ...f, interval: e.target.value })}>
+            {PLAN_INTERVALS.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
+          </select>
+        </Field>
+      </div>
+      <div className="fc-row2">
+        <Field label={existing ? "Termine ab" : "Erste Ausführung"}>
+          <input type="date" value={f.start} onChange={(e) => setF({ ...f, start: e.target.value })} />
+        </Field>
+        <Field label="Gebühr je Ausführung">
+          <NumInput value={f.fee} onChange={(v) => setF({ ...f, fee: v })} placeholder="0" />
+        </Field>
+      </div>
+      <Field label="Endet am (optional)">
+        <input type="date" value={f.end} onChange={(e) => setF({ ...f, end: e.target.value })} />
+      </Field>
+      <div className="fc-detail-note" style={{ margin: "-6px 0 14px" }}>
+        {amount > 0 ? <>Kauft {name ? <b>{name}</b> : "die Position"} für <b>{eurFull(amount)}</b> {planInterval(f.interval).label}{fee > 0 ? ` (davon ${eurFull(fee)} Gebühr)` : ""}. </> : null}
+        Jede Ausführung wird als eigener Kauf mit dem Kurs des Tages angelegt – verpasste Termine trägt die App beim nächsten Öffnen nach.
+        {past.length > 0 && <> <b>{past.length} {past.length === 1 ? "Termin liegt" : "Termine liegen"} in der Vergangenheit</b> und {past.length === 1 ? "wird" : "werden"} sofort gebucht – mit historischen Kursen, sofern verfügbar (sonst als „Kurs geschätzt“ markiert).</>}
+      </div>
+    </>
+  );
+}
+
 /* ---------- Asset-Detail: alle Käufe und Verkäufe einer Position ---------- */
-export function AssetDetail({ group, divs = [], onAddLot, onEditLot, onDeleteLot, onSell, onDeleteSell, onDiv, onDeleteDiv }) {
+export function AssetDetail({ group, divs = [], plans = [], masked = false, onAddLot, onEditLot, onDeleteLot, onSell, onEditSell, onDeleteSell, onDiv, onDeleteDiv, onEditPosition, onPlan, onTogglePlan }) {
+  const M = (v) => (masked ? MASK : v);
   const unit = group.type === "rohstoff" ? (group.ref.unit || "Einheiten") : "Stück";
   const lots = [...group.lots].sort((a, b) => (a.buyDate || "9999-12-31").localeCompare(b.buyDate || "9999-12-31"));
   const sells = [...group.sells].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -1028,6 +1188,7 @@ export function AssetDetail({ group, divs = [], onAddLot, onEditLot, onDeleteLot
   const cut = addDays(todayIso(), -365);
   const div12 = myDivs.filter((x) => (x.date || "") >= cut).reduce((s, x) => s + (Number(x.amt) || 0), 0);
   const pct = group.cost > 0 ? (group.unreal / group.cost) * 100 : 0;
+  const today = localTodayIso();
 
   const idLot = group.lots.find((l) => l.isin || l.wkn);
   const idLine = [
@@ -1035,45 +1196,83 @@ export function AssetDetail({ group, divs = [], onAddLot, onEditLot, onDeleteLot
     idLot && idLot.isin ? `ISIN ${idLot.isin}` : null,
     idLot && idLot.wkn ? `WKN ${idLot.wkn}` : null,
   ].filter(Boolean);
+  const region = group.type === "aktie" || group.type === "etf" ? regionOf(group) : null;
+  const regionLabel = region && region.id ? (REGIONS.find((r) => r.id === region.id) || {}).label : "";
+  const canPlan = ["aktie", "etf", "krypto", "rohstoff"].includes(group.type);
 
   return (
     <div>
-      {idLot && <div className="fc-idline">{idLine.join(" · ")}</div>}
+      {(idLine.length > 0 || regionLabel) && (
+        <div className="fc-idline">{[...(idLot ? idLine : []), regionLabel ? `Region ${regionLabel}${region.auto ? " · automatisch erkannt" : ""}` : null].filter(Boolean).join(" · ")}</div>
+      )}
       <div className="fc-detail-kpis">
-        <div><span className="l">Wert</span><span className="v">{eur(group.value)}</span></div>
+        <div><span className="l">Wert</span><span className="v">{M(eur(group.value))}</span></div>
         <div><span className="l">Bestand</span><span className="v">{fmtQty(group.qty)} {unit}</span></div>
-        <div><span className="l">Ø Kaufkurs</span><span className="v">{eurFull(group.avgBuy)}</span></div>
-        <div><span className="l">Aktueller Kurs</span><span className="v">{eurFull(group.price)}</span></div>
+        <div><span className="l">Ø Kaufkurs</span><span className="v">{M(eurFull(group.avgBuy))}</span></div>
+        <div><span className="l">Aktueller Kurs</span><span className="v">{M(eurFull(group.price))}</span></div>
         <div>
           <span className="l">Nicht realisiert</span>
-          <span className="v" style={{ color: group.unreal >= 0 ? C.positive : C.error }}>
-            {group.unreal >= 0 ? "+" : ""}{eur(group.unreal)}{group.cost > 0 ? ` · ${pct >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} %` : ""}
+          <span className="v" style={{ color: masked ? C.ink : group.unreal >= 0 ? C.positive : C.error }}>
+            {M(`${group.unreal >= 0 ? "+" : ""}${eur(group.unreal)}`)}{group.cost > 0 ? ` · ${pct >= 0 ? "+" : ""}${pct.toFixed(1).replace(".", ",")} %` : ""}
           </span>
         </div>
         <div>
           <span className="l">Realisiert (FIFO)</span>
-          <span className="v" style={{ color: group.realized > 0 ? C.positive : group.realized < 0 ? C.error : C.muted }}>
-            {group.realized >= 0 ? "+" : ""}{eur(group.realized)}
+          <span className="v" style={{ color: masked ? C.ink : group.realized > 0 ? C.positive : group.realized < 0 ? C.error : C.muted }}>
+            {M(`${group.realized >= 0 ? "+" : ""}${eur(group.realized)}`)}
           </span>
         </div>
         {divSum > 0 && (
           <div>
             <span className="l">Ausschüttungen</span>
-            <span className="v" style={{ color: C.positive }}>+{eur(divSum)}</span>
-            <span className="l" style={{ marginTop: 1 }}>{div12 > 0 ? `${eur(div12)} letzte 12 Mon.` : "gesamt"}</span>
+            <span className="v" style={{ color: masked ? C.ink : C.positive }}>{M(`+${eur(divSum)}`)}</span>
+            <span className="l" style={{ marginTop: 1 }}>{div12 > 0 ? `${M(eur(div12))} letzte 12 Mon.` : "gesamt"}</span>
           </div>
         )}
       </div>
 
+      {canPlan && plans.map((plan) => {
+        const st = planStats(plan, group.lots);
+        const next = nextPlanDate(plan, today);
+        return (
+          <div key={plan.id} className={`fc-plan ${plan.active === false ? "off" : ""}`}>
+            <span className="ic"><CalendarClock size={18} strokeWidth={1.9} /></span>
+            <div className="m">
+              <div className="t">Sparplan {M(eurFull(plan.amount))} {planInterval(plan.interval).label}{plan.active === false && <span className="fc-tag">pausiert</span>}</div>
+              <div className="s">
+                <Sub parts={[
+                  plan.active === false ? "keine Ausführungen" : next ? `nächste ${fmtDay(next)}` : "beendet",
+                  st.runs ? `${st.runs} ${st.runs === 1 ? "Ausführung" : "Ausführungen"}` : null,
+                  st.runs ? `Ø ${M(eurFull(st.avg))}` : null,
+                ]} />
+              </div>
+              {st.est > 0 && <div className="fc-note muted">{st.est} {st.est === 1 ? "Kauf" : "Käufe"} mit geschätztem Kurs – wird nachgerechnet, sobald die Kurshistorie da ist.</div>}
+            </div>
+            <div className="acts">
+              <button type="button" className="fc-catbtn" onClick={() => onTogglePlan(plan)} aria-label={plan.active === false ? "Sparplan fortsetzen" : "Sparplan pausieren"} title={plan.active === false ? "Fortsetzen" : "Pausieren"}>
+                {plan.active === false ? <Play size={14} strokeWidth={2} /> : <Pause size={14} strokeWidth={2} />}
+              </button>
+              <button type="button" className="fc-catbtn" onClick={() => onPlan(plan)} aria-label="Sparplan bearbeiten" title="Bearbeiten"><Pencil size={14} strokeWidth={2} /></button>
+            </div>
+          </div>
+        );
+      })}
+
       <div className="fc-detail-sec">Käufe</div>
       {lots.map((l) => (
         <div className="fc-detail-row" key={l.id}>
-          <div className="m" onClick={() => onEditLot(l)}>
-            <div className="t">{fmtQty(l.qty)} {unit} × {eurFull(l.buyPrice || 0)}</div>
-            <div className="s"><Sub parts={[l.buyDate ? fmtDay(l.buyDate) : "ohne Kaufdatum", l.inChart === false ? "nicht im Chart" : null]} /></div>
-          </div>
+          <button type="button" className="m" onClick={() => onEditLot(l)} aria-label="Kauf bearbeiten">
+            <span className="t">{fmtQty(l.qty)} {unit} × {M(eurFull(l.buyPrice || 0))}</span>
+            <span className="s"><Sub parts={[
+              l.buyDate ? fmtDay(l.buyDate) : "ohne Kaufdatum",
+              l.plan ? "Sparplan" : null,
+              l.est ? "Kurs geschätzt" : null,
+              l.imp ? "importiert" : null,
+              l.inChart === false ? "nicht im Chart" : null,
+            ]} /></span>
+          </button>
           <div className="r">
-            <span className="a">{eur((Number(l.qty) || 0) * (Number(l.buyPrice) || 0))}</span>
+            <span className="a">{M(eur((Number(l.qty) || 0) * (Number(l.buyPrice) || 0)))}</span>
             <button className="fc-del" onClick={() => onDeleteLot(l.id)} aria-label="Kauf löschen">–</button>
           </div>
         </div>
@@ -1084,21 +1283,21 @@ export function AssetDetail({ group, divs = [], onAddLot, onEditLot, onDeleteLot
           <div className="fc-detail-sec">Verkäufe</div>
           {sells.map((s) => (
             <div className="fc-detail-row" key={s.id}>
-              <div className="m">
-                <div className="t">{fmtQty(s.qty)} {unit} × {eurFull(s.price || 0)}</div>
-                <div className="s">
+              <button type="button" className="m" onClick={() => onEditSell && onEditSell(s)} aria-label="Verkauf bearbeiten">
+                <span className="t">{fmtQty(s.qty)} {unit} × {M(eurFull(s.price || 0))}</span>
+                <span className="s">
                   <Sub parts={[
                     fmtDay(s.date),
                     <>realisiert{" "}
-                      <b style={{ color: (realizedById[s.id] || 0) >= 0 ? C.positive : C.error }}>
-                        {(realizedById[s.id] || 0) >= 0 ? "+" : ""}{eurFull(realizedById[s.id] || 0)}
+                      <b style={{ color: masked ? C.ink : (realizedById[s.id] || 0) >= 0 ? C.positive : C.error }}>
+                        {M(`${(realizedById[s.id] || 0) >= 0 ? "+" : ""}${eurFull(realizedById[s.id] || 0)}`)}
                       </b>
                     </>,
                   ]} />
-                </div>
-              </div>
+                </span>
+              </button>
               <div className="r">
-                <span className="a">{eur((Number(s.qty) || 0) * (Number(s.price) || 0))}</span>
+                <span className="a">{M(eur((Number(s.qty) || 0) * (Number(s.price) || 0)))}</span>
                 <button className="fc-del" onClick={() => onDeleteSell(s.id)} aria-label="Verkauf löschen">–</button>
               </div>
             </div>
@@ -1111,9 +1310,9 @@ export function AssetDetail({ group, divs = [], onAddLot, onEditLot, onDeleteLot
           <div className="fc-detail-sec">Ausschüttungen</div>
           {myDivs.slice(0, 10).map((x) => (
             <div className="fc-detail-row" key={x.id}>
-              <div className="m">
-                <div className="t" style={{ color: C.positive }}>+{eurFull(x.amt)}</div>
-                <div className="s">{fmtDay(x.date)}</div>
+              <div className="m static">
+                <div className="t" style={{ color: masked ? C.ink : C.positive }}>{M(`+${eurFull(x.amt)}`)}</div>
+                <div className="s"><Sub parts={[fmtDay(x.date), x.tax ? `Steuer ${M(eurFull(x.tax))}` : null]} /></div>
               </div>
               <div className="r">
                 <button className="fc-del" onClick={() => onDeleteDiv(x.id)} aria-label="Ausschüttung löschen">–</button>
@@ -1127,11 +1326,18 @@ export function AssetDetail({ group, divs = [], onAddLot, onEditLot, onDeleteLot
         <Btn onClick={onAddLot}>Zukauf</Btn>
         <Btn kind="ghost" disabled={group.qty <= 0} onClick={onSell}>Verkaufen</Btn>
       </div>
-      <div style={{ marginTop: 10 }}>
-        <Btn kind="ghost" onClick={onDiv} style={{ gap: 6 }}><Percent size={15} strokeWidth={2} /> Dividende / Zinsen</Btn>
+      <div style={{ display: "flex", gap: 12, marginTop: 10 }}>
+        <Btn kind="ghost" onClick={onDiv} style={{ gap: 6 }}><Percent size={15} strokeWidth={2} /> Dividende</Btn>
+        {canPlan && <Btn kind="ghost" onClick={() => onPlan(null)} style={{ gap: 6 }}><CalendarClock size={15} strokeWidth={2} /> {plans.length ? "Weiterer Sparplan" : "Sparplan"}</Btn>}
       </div>
+      {onEditPosition && (
+        <div style={{ marginTop: 10 }}>
+          <Btn kind="ghost" onClick={onEditPosition} style={{ gap: 6 }}><SlidersHorizontal size={15} strokeWidth={2} /> Position bearbeiten</Btn>
+        </div>
+      )}
       <div className="fc-detail-note" style={{ marginTop: 12 }}>
         Verkäufe werden nach FIFO abgerechnet: die ältesten Käufe gehen zuerst. Erlöse und Ausschüttungen landen auf deinem Cash-Konto.
+        Käufe und Verkäufe lassen sich antippen und bearbeiten{onEditPosition ? " – Name, Kennung (Ticker/ISIN/WKN) und Region unter „Position bearbeiten“" : ""}.
       </div>
     </div>
   );

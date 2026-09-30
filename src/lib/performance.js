@@ -15,6 +15,14 @@ export const isClosed = (g) =>
 export const TAXABLE_TYPES = ["aktie", "etf"];
 export const sparerPauschbetrag = (splitting) => (splitting ? 2000 : 1000);
 
+/* Welche Positionen in Performance & Bilanz zählen: Immobilien nur mit Chart-Häkchen
+   (ohne Häkchen = bewusst ausgeklammert, z. B. das selbst bewohnte Eigenheim) */
+export const inPerf = (g) => !!g && !(g.type === "immobilie" && !g.inChart);
+export const perfGroupsOf = (groups = []) => groups.filter(inPerf);
+
+/* Ausschüttung brutto = Gutschrift + einbehaltene Steuer (zählt für den Pauschbetrag) */
+export const divGross = (d) => (Number(d.amt) || 0) + (Number(d.tax) || 0);
+
 const sum = (list, fn) => list.reduce((s, x) => s + (Number(fn(x)) || 0), 0);
 const yearOf = (iso) => String(iso || "").slice(0, 4);
 
@@ -71,7 +79,7 @@ export function perfSummary(groups = [], divs = []) {
   const invested = sum(groups.filter((g) => g.type !== "cash"), (g) => sum(g.lots || [], (l) => (Number(l.qty) || 0) * (Number(l.buyPrice) || 0)));
 
   const byYear = {};
-  const bucket = (y) => (byYear[y] = byYear[y] || { realized: 0, taxable: 0, divs: 0 });
+  const bucket = (y) => (byYear[y] = byYear[y] || { realized: 0, taxable: 0, divs: 0, divsGross: 0 });
   for (const g of groups) {
     for (const m of g.matches || []) {
       const y = yearOf(m.date);
@@ -83,7 +91,7 @@ export function perfSummary(groups = [], divs = []) {
   }
   for (const d of divs) {
     const y = yearOf(d.date);
-    if (/^\d{4}$/.test(y)) bucket(y).divs += Number(d.amt) || 0;
+    if (/^\d{4}$/.test(y)) { const b = bucket(y); b.divs += Number(d.amt) || 0; b.divsGross += divGross(d); }
   }
   const years = Object.keys(byYear).sort();
 

@@ -3,18 +3,21 @@
 import { isoDay } from "./utils.js";
 import { TICKER_DOMAINS, CRYPTO_MAX_DAYS } from "./constants.jsx";
 
-/* USD → Zielwährung, mit Fallback-Quelle (frankfurter.app ist unzuverlässig geworden) */
-export async function fetchUsdRate(target) {
-  if (target === "USD") return 1;
-  try {
-    const j = await fetch(`https://api.frankfurter.dev/v1/latest?base=USD&symbols=${target}`).then((r) => r.json());
-    if (j && j.rates && j.rates[target]) return j.rates[target];
-  } catch { /* Fallback unten */ }
-  try {
-    const j = await fetch("https://open.er-api.com/v6/latest/USD").then((r) => r.json());
-    if (j && j.rates && j.rates[target]) return j.rates[target];
-  } catch { /* beide down */ }
-  return 0;
+/* Kurse in einer Unterwährung (Pence, Cent, Agorot) → Hauptwährung.
+   Twelve Data meldet LSE-Notierungen z. B. als "GBp": 1234 GBp = 12,34 GBP. */
+const MINOR = { GBp: ["GBP", 100], GBX: ["GBP", 100], ZAc: ["ZAR", 100], ZAC: ["ZAR", 100], ILA: ["ILS", 100], ILa: ["ILS", 100] };
+export function normPrice(price, ccy) {
+  const m = MINOR[ccy];
+  const p = Number(price);
+  return m ? { price: p / m[1], ccy: m[0] } : { price: p, ccy: ccy || "" };
+}
+/* Ganze Serie normalisieren (gleicher Faktor für alle Tage) */
+export function normSeries(series, ccy) {
+  const m = MINOR[ccy];
+  if (!m) return { series, ccy: ccy || "USD" };
+  const out = {};
+  for (const [d, v] of Object.entries(series)) out[d] = v / m[1];
+  return { series: out, ccy: m[0] };
 }
 
 /* Generischer Wechselkurs from->to (frankfurter.dev, Fallback er-api) */
@@ -43,7 +46,7 @@ export async function fetchStockHistory(sym, key, startIso) {
   }
   const series = {};
   for (const v of j.values) series[v.datetime] = Number(v.close);
-  return { ccy: (j.meta && j.meta.currency) || "USD", series };
+  return normSeries(series, (j.meta && j.meta.currency) || "USD");
 }
 
 /* Krypto: CoinGecko (direkt in Zielwährung, max. 365 Tage gratis) */
@@ -95,7 +98,7 @@ export async function fetchStockHistories(syms, key, startIso) {
     }
     const series = {};
     for (const v of part.values) series[v.datetime] = Number(v.close);
-    out[s] = { ccy: (part.meta && part.meta.currency) || "USD", series };
+    out[s] = normSeries(series, (part.meta && part.meta.currency) || "USD");
   }
   return out;
 }
