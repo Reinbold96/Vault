@@ -6,14 +6,15 @@ import { CURRENCIES, INTERVAL_IDS } from "./constants.jsx";
 import { RENEWAL_IDS } from "./contracts.js";
 import { CREDIT_KIND_IDS } from "./finance.js";
 import { isValidIsin, isValidWkn } from "./identifiers.js";
+import { PLAN_INTERVALS } from "./plans.js";
 
 export const DATA_KEY = "finanz_state_v1";
 export const SETTINGS_KEY = "finanz_settings_v1";
 export const MASKED_KEY = "finanz_masked";
 export const HIST_KEY = "vault_hist_v1"; /* alter localStorage-Schlüssel, wird migriert */
-export const BACKUP_VERSION = 4;
+export const BACKUP_VERSION = 5;
 
-export const EMPTY = { incomes: [], expenses: [], credits: [], investments: [], sells: [], divs: [], goals: [], cats: [], catNames: {}, snapshots: [], archived: [] };
+export const EMPTY = { incomes: [], expenses: [], credits: [], investments: [], sells: [], divs: [], goals: [], cats: [], catNames: {}, snapshots: [], archived: [], plans: [] };
 
 export const DEFAULT_SETTINGS = {
   finnhubKey: "", tdKey: "", currency: "EUR", theme: "system", calcMode: "surplus",
@@ -49,39 +50,59 @@ function openDb() {
   });
   return dbPromise;
 }
-function idbGet(key) {
+function idbReq(mode, fn) {
   return openDb().then((db) => new Promise((res, rej) => {
-    const r = db.transaction(STORE, "readonly").objectStore(STORE).get(key);
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
-  }));
-}
-function idbSet(key, val) {
-  return openDb().then((db) => new Promise((res, rej) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(val, key);
-    tx.oncomplete = () => res(true);
+    const tx = db.transaction(STORE, mode);
+    const out = fn(tx.objectStore(STORE));
+    tx.oncomplete = () => res(out && "result" in out ? out.result : true);
     tx.onerror = () => rej(tx.error);
+    tx.onabort = () => rej(tx.error);
   }));
 }
+/* Alle Einträge als [Schlüssel, Wert] */
+function idbEntries() {
+  return openDb().then((db) => new Promise((res, rej) => {
+    const out = [];
+    const req = db.transaction(STORE, "readonly").objectStore(STORE).openCursor();
+    req.onsuccess = () => { const c = req.result; if (c) { out.push([c.key, c.value]); c.continue(); } else res(out); };
+    req.onerror = () => rej(req.error);
+  }));
+}
+const idbPutMany = (pairs) => idbReq("readwrite", (st) => { for (const [k, v] of pairs) st.put(v, k); });
+const idbDel = (key) => idbReq("readwrite", (st) => { st.delete(key); });
 
-/* Historie laden: IndexedDB, beim ersten Mal Migration aus localStorage */
+/* Historie: jede Serie als eigener Eintrag ("s:<schlüssel>") – beim Speichern werden nur
+   die geänderten Serien geschrieben statt eines grossen Blobs. Ältere Fassungen hatten
+   einen Eintrag "all" (bzw. localStorage) – der wird beim ersten Laden aufgeteilt. */
+const PREFIX = "s:";
 export async function loadHist() {
   try {
-    const h = await idbGet("all");
-    if (h && typeof h === "object") return h;
-  } catch { /* IDB nicht verfügbar → localStorage-Fallback */ }
-  try {
-    const legacy = JSON.parse(localStorage.getItem(HIST_KEY) || "{}");
-    if (Object.keys(legacy).length) {
-      try { await idbSet("all", legacy); localStorage.removeItem(HIST_KEY); } catch { /* bleibt im LS */ }
+    const entries = await idbEntries();
+    const out = {};
+    let legacy = null;
+    for (const [k, v] of entries) {
+      if (k === "all") legacy = v;
+      else if (String(k).startsWith(PREFIX)) out[String(k).slice(PREFIX.length)] = v;
     }
-    return legacy;
-  } catch { return {}; }
+    if (!legacy) {
+      try { const ls = JSON.parse(localStorage.getItem(HIST_KEY) || "null"); if (ls && typeof ls === "object") legacy = ls; } catch { /* ignore */ }
+    }
+    if (legacy && typeof legacy === "object") {
+      for (const [k, v] of Object.entries(legacy)) if (!(k in out)) out[k] = v;
+      try {
+        await idbPutMany(Object.entries(legacy).map(([k, v]) => [PREFIX + k, v]));
+        await idbDel("all");
+        localStorage.removeItem(HIST_KEY);
+      } catch { /* bleibt, wie es ist */ }
+    }
+    return out;
+  } catch { /* IDB nicht verfügbar → localStorage */ }
+  try { return JSON.parse(localStorage.getItem(HIST_KEY) || "{}") || {}; } catch { return {}; }
 }
-/* Speichern: IDB, Fallback localStorage; liefert false, wenn nichts geklappt hat */
-export async function saveHist(h) {
-  try { await idbSet("all", h); return true; } catch { /* Fallback */ }
+/* Speichern: nur die angegebenen Serien (sonst alle); false, wenn nichts geklappt hat */
+export async function saveHist(h, keys) {
+  const list = (keys || Object.keys(h)).filter((k) => h[k]);
+  try { await idbPutMany(list.map((k) => [PREFIX + k, h[k]])); return true; } catch { /* Fallback */ }
   return saveLS(HIST_KEY, h);
 }
 
@@ -142,11 +163,18 @@ export function normalizeData(raw) {
       flows: Array.isArray(x.flows) ? arr(x.flows).map(flow) : undefined,
     }, i)),
     sells: arr(d.sells).map((x, i) => withId({ gkey: str(x.gkey), qty: num(x.qty), price: num(x.price), date: str(x.date) }, i)),
-    divs: arr(d.divs).map((x, i) => withId({ gkey: str(x.gkey), amt: num(x.amt), date: str(x.date) }, i)),
+    divs: arr(d.divs).map((x, i) => withId({ gkey: str(x.gkey), amt: num(x.amt), date: str(x.date), ...(num(x.tax) > 0 ? { tax: num(x.tax) } : {}) }, i)),
     goals: arr(d.goals).map((x, i) => withId({ name: str(x.name), target: num(x.target), saved: num(x.saved), deadline: str(x.deadline) }, i)),
     cats: arr(d.cats).map((x, i) => withId({ label: str(x.label), kind: x.kind === "variabel" ? "variabel" : "fix", color: str(x.color, "#8a5a2b") }, i)),
     catNames: Object.fromEntries(Object.entries(obj(d.catNames) || {}).filter(([, v]) => typeof v === "string")),
     archived: Array.isArray(d.archived) ? d.archived.filter((x) => typeof x === "string") : [],
+    plans: arr(d.plans).map((p, i) => withId({
+      gkey: str(p.gkey), tpl: obj(p.tpl) || {}, amount: num(p.amount),
+      ...(num(p.fee) > 0 ? { fee: num(p.fee) } : {}),
+      interval: PLAN_INTERVALS.some((x) => x.id === p.interval) ? p.interval : "monatlich",
+      start: str(p.start), ...(p.end ? { end: str(p.end) } : {}),
+      active: p.active !== false, lastRun: str(p.lastRun),
+    }, i)).filter((p) => p.gkey && p.start && p.amount > 0),
     snapshots: arr(d.snapshots).filter((s) => /^\d{4}-\d{2}$/.test(str(s.m))).map((s) => ({ m: s.m, net: num(s.net), pf: num(s.pf), debt: num(s.debt) })),
   };
 }
@@ -171,7 +199,8 @@ export function normalizeSettings(raw, prev = DEFAULT_SETTINGS) {
 }
 
 /* Backup-Datei → { data, settings } oder wirft. Versteht alle bisherigen Formate:
-   v1/v2: Daten direkt · v3: {vault:3,data,settings(5 Felder)} · v4: vollständige settings */
+   v1/v2: Daten direkt · v3: {vault:3,data,settings(5 Felder)} · v4: vollständige settings
+   · v5: zusätzlich Sparpläne und einbehaltene Steuer bei Ausschüttungen */
 export function parseBackup(text) {
   const parsed = JSON.parse(String(text || "").replace(/^\uFEFF/, "").trim());
   const p = obj(parsed);
@@ -182,7 +211,7 @@ export function parseBackup(text) {
   return { version, data: normalizeData(rawData), settings: obj(p.settings) };
 }
 
-export function buildBackup(data, settings, { includeKeys = true } = {}) {
+export function buildBackup(data, settings, { includeKeys = false } = {}) {
   const s = { ...settings };
   delete s.lockEnabled; delete s.lockCredId;
   if (!includeKeys) { delete s.finnhubKey; delete s.tdKey; }

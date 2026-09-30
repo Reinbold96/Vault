@@ -153,7 +153,7 @@ export function objektAnalyse(i, profile) {
         interestY += int; principalY += prin; bal = Math.max(0, bal - prin);
       }
     }
-    const { erg, wirkung } = monthTax(interestY, rentEffY);
+    const { wirkung } = monthTax(interestY, rentEffY);
     const paidAnnuity = annuityY > 0 ? interestY + principalY : 0;
     const cashY = rentEffY - paidAnnuity - opsCashY - wirkung; /* echter Netto-Cashflow n. St. */
     kumCash += cashY;
