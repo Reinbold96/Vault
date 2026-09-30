@@ -25,6 +25,7 @@ export const Empty = ({ text, action }) => (
 
 export const Btn = ({ children, onClick, kind = "primary", small, disabled, style }) => (
   <button
+    type="button"
     onClick={onClick}
     disabled={disabled}
     className={`fc-btn ${kind} ${small ? "small" : ""}`}
@@ -43,7 +44,7 @@ export const SearchBar = ({ value, onChange, placeholder }) => (
 );
 
 /* Betragsfeld: Komma-Eingabe, Tausenderpunkte beim Verlassen des Feldes */
-export function NumInput({ value, onChange, placeholder = "0", autoFocus }) {
+export function NumInput({ value, onChange, placeholder = "0", ariaLabel }) {
   const fmt = (v) => {
     const n = Number(v);
     if (v === "" || v == null || isNaN(n)) return "";
@@ -58,7 +59,7 @@ export function NumInput({ value, onChange, placeholder = "0", autoFocus }) {
     <input
       type="text"
       inputMode="decimal"
-      autoFocus={autoFocus}
+      aria-label={ariaLabel}
       value={shown}
       placeholder={placeholder}
       onFocus={() => { setLive(true); setTxt(value === "" || value == null ? "" : String(value).replace(".", ",")); }}
@@ -87,6 +88,25 @@ export function Fresh({ v, children }) {
 
 export const YearTag = () => <span className="fc-tag">Jährlich</span>;
 
+/* Umschalter (Segmente): echte Buttons mit aria-pressed statt eines halben Tablists */
+export const Seg = ({ options, value, onChange, className = "", label, style }) => (
+  <div className={`fc-seg ${className}`} role="group" aria-label={label} style={style}>
+    {options.map((o) => (
+      <button key={o.id} type="button" className={value === o.id ? "active" : ""} aria-pressed={value === o.id} onClick={() => onChange(o.id)} title={o.title} aria-label={o.aria}>
+        {o.label}
+      </button>
+    ))}
+  </div>
+);
+
+/* Häkchen-Zeile */
+export const CheckRow = ({ on, onToggle, children, style }) => (
+  <button type="button" className="fc-check" onClick={onToggle} aria-pressed={!!on} style={style}>
+    <span className={`box ${on ? "on" : ""}`}>{on && <Check size={13} strokeWidth={3} />}</span>
+    <span>{children}</span>
+  </button>
+);
+
 /* Untertitel aus mehreren kurzen Teilen – mit dezentem Trenner statt Textpunkt */
 export const Sub = ({ parts }) => (
   <>
@@ -104,7 +124,8 @@ export const Lead = ({ icon: Ic }) => (
 );
 
 export function AssetLogo({ inv, enabled = true }) {
-  const candidates = useMemo(() => (enabled ? logoCandidates(inv) : []), [inv.symbol, inv.type, inv.logoUrl, enabled]);
+  const { symbol, type, logoUrl } = inv;
+  const candidates = useMemo(() => (enabled ? logoCandidates({ symbol, type, logoUrl }) : []), [symbol, type, logoUrl, enabled]);
   const [state, setState] = useState({ key: "", idx: 0 });
   const key = `${inv.symbol}|${inv.type}|${inv.logoUrl}`;
   const idx = state.key === key ? state.idx : 0;
@@ -117,24 +138,48 @@ export function AssetLogo({ inv, enabled = true }) {
 }
 
 /* ---------- Modal (Bottom Sheet) ----------
-   role="dialog" + aria-modal, Escape schliesst, Fokus geht beim Öffnen in den
-   Sheet und beim Schliessen zurück zum auslösenden Element. */
+   role="dialog" + aria-modal, Escape schliesst, Tab bleibt im Sheet, beim Schliessen
+   geht der Fokus zurück zum auslösenden Element.
+   Beim Öffnen bekommt der Sheet selbst den Fokus – NICHT das erste Eingabefeld: wer
+   einen Eintrag nur ansehen will, soll nicht sofort Tastatur und Cursor bekommen.
+   onClose liegt in einem Ref, damit der Effekt nur beim Öffnen läuft (vorher lief er
+   bei jedem App-Render erneut und setzte den Fokus zurück). */
 export function Sheet({ title, onClose, children }) {
   const ref = useRef(null);
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
+  const close = () => closeRef.current && closeRef.current();
+  /* Unter dem klebenden Speichern-Button nur dann ausblenden, wenn darunter noch
+     Inhalt kommt – am Ende der Liste bleibt alles voll sichtbar */
+  const [more, setMore] = useState(false);
+  const measure = () => {
+    const el = ref.current;
+    if (el) setMore(el.scrollHeight - el.scrollTop - el.clientHeight > 6);
+  };
+  const measureRef = useRef(measure);
+  useEffect(() => { measureRef.current = measure; });
+  /* nach jedem Render neu messen (Inhalt kann auf- oder zuklappen) */
+  useEffect(() => { measureRef.current(); });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const upd = () => measureRef.current();
+    el.addEventListener("scroll", upd, { passive: true });
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(upd) : null;
+    if (ro) { ro.observe(el); for (const c of el.children) ro.observe(c); }
+    return () => { el.removeEventListener("scroll", upd); if (ro) ro.disconnect(); };
+  }, []);
   useEffect(() => {
     const opener = document.activeElement;
     const el = ref.current;
-    if (el) {
-      const first = el.querySelector("input, select, textarea, button:not(.fc-x)");
-      (first || el).focus({ preventScroll: true });
-    }
+    if (el) el.focus({ preventScroll: true });
     const onKey = (e) => {
-      if (e.key === "Escape") { e.stopPropagation(); onClose(); return; }
+      if (e.key === "Escape") { e.stopPropagation(); closeRef.current && closeRef.current(); return; }
       if (e.key !== "Tab" || !el) return;
       const f = [...el.querySelectorAll("input, select, textarea, button, [tabindex]:not([tabindex='-1'])")].filter((x) => !x.disabled);
       if (!f.length) return;
       const a = f[0], z = f[f.length - 1];
-      if (e.shiftKey && document.activeElement === a) { e.preventDefault(); z.focus(); }
+      if (e.shiftKey && (document.activeElement === a || document.activeElement === el)) { e.preventDefault(); z.focus(); }
       else if (!e.shiftKey && document.activeElement === z) { e.preventDefault(); a.focus(); }
     };
     document.addEventListener("keydown", onKey);
@@ -142,13 +187,13 @@ export function Sheet({ title, onClose, children }) {
       document.removeEventListener("keydown", onKey);
       if (opener && opener.focus) opener.focus({ preventScroll: true });
     };
-  }, [onClose]);
+  }, []);
   return (
-    <div className="fc-overlay" onClick={onClose}>
-      <div className="fc-sheet" role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : undefined} tabIndex={-1} ref={ref} onClick={(e) => e.stopPropagation()}>
+    <div className="fc-overlay" onClick={close}>
+      <div className={`fc-sheet ${more ? "more" : ""}`} role="dialog" aria-modal="true" aria-label={typeof title === "string" ? title : undefined} tabIndex={-1} ref={ref} onClick={(e) => e.stopPropagation()}>
         <div className="fc-sheet-head">
           <span>{title}</span>
-          <button className="fc-x" onClick={onClose} aria-label="Schliessen">✕</button>
+          <button className="fc-x" onClick={close} aria-label="Schliessen">✕</button>
         </div>
         {children}
       </div>
